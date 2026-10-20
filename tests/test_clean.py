@@ -28,12 +28,12 @@ def raw(*pages: str) -> list[RawPage]:
 @pytest.mark.parametrize(
     ("line", "expected"),
     [
-        ("ﬁne-tuning with ﬂoating oﬀsets", "fine-tuning with floating offsets"),
+        ("\ufb01ne-tuning with \ufb02oating o\ufb00sets", "fine-tuning with floating offsets"),
         ("Faculty of Science\xa0\xa0\xa0\xa0 3", "Faculty of Science 3"),
         ("  tabs\tand   spaces  ", "tabs and spaces"),
-        ("zero​width﻿", "zerowidth"),
-        ("pre‐train and non‑stop", "pre-train and non-stop"),
-        ("café", "café"),
+        ("zero\u200bwidth\ufeff", "zerowidth"),
+        ("pre\u2010train and non\u2011stop", "pre-train and non-stop"),
+        ("cafe\u0301", "café"),
     ],
 )
 def test_normalize_line(line, expected):
@@ -41,7 +41,7 @@ def test_normalize_line(line, expected):
 
 
 def test_normalize_keeps_a_soft_hyphen_for_joining():
-    assert normalize_line("represen­") == "represen" + SOFT_HYPHEN
+    assert normalize_line("represen\u00ad") == "represen" + SOFT_HYPHEN
 
 
 # Headers, footers and stamps ------------------------------------------------

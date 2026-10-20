@@ -23,21 +23,21 @@ from dataclasses import dataclass
 from pdfqa.extract import RawPage
 
 _REPLACEMENTS = {
-    "ﬀ": "ff",
-    "ﬁ": "fi",
-    "ﬂ": "fl",
-    "ﬃ": "ffi",
-    "ﬄ": "ffl",
-    "ﬅ": "st",
-    "ﬆ": "st",
-    "‐": "-",  # hyphen
-    "‑": "-",  # non-breaking hyphen
-    "​": "",  # zero-width space
-    "‌": "",  # zero-width non-joiner
-    "‍": "",  # zero-width joiner
-    "﻿": "",  # byte order mark
+    "\ufb00": "ff",
+    "\ufb01": "fi",
+    "\ufb02": "fl",
+    "\ufb03": "ffi",
+    "\ufb04": "ffl",
+    "\ufb05": "st",
+    "\ufb06": "st",
+    "\u2010": "-",  # hyphen
+    "\u2011": "-",  # non-breaking hyphen
+    "\u200b": "",  # zero-width space
+    "\u200c": "",  # zero-width non-joiner
+    "\u200d": "",  # zero-width joiner
+    "\ufeff": "",  # byte order mark
 }
-SOFT_HYPHEN = "­"
+SOFT_HYPHEN = "\u00ad"
 _WHITESPACE = re.compile(r"\s+")  # includes no-break, thin and other unicode spaces
 
 _ARXIV_STAMP = re.compile(r"^arXiv:\d{4}\.\d{4,5}(?:v\d+)?\s+\[[\w.-]+\]\s+\d{1,2}\s+\w+\s+\d{4}$")
