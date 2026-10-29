@@ -60,6 +60,7 @@ def test_reopening_keeps_the_data(tmp_path):
 def test_in_memory_library():
     conn = library.connect(":memory:")
     assert library.list_documents(conn) == []
+    conn.close()
 
 
 def test_refuses_a_library_from_a_newer_version(tmp_path):

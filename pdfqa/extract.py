@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import io
 import logging
+import multiprocessing
 import os
 import re
 from collections.abc import Callable
@@ -155,7 +156,9 @@ def _extract_batch(start: int, stop: int) -> list[str | None]:
 def _extract_in_parallel(data: bytes, page_count: int, workers: int, progress: Progress | None) -> list[str | None]:
     texts: list[str | None] = [None] * page_count
     done = 0
-    with ProcessPoolExecutor(max_workers=workers, initializer=_start_worker, initargs=(data,)) as pool:
+    with ProcessPoolExecutor(
+        max_workers=workers, mp_context=_process_context(), initializer=_start_worker, initargs=(data,)
+    ) as pool:
         batches = {
             pool.submit(_extract_batch, start, min(start + _BATCH_PAGES, page_count)): start
             for start in range(0, page_count, _BATCH_PAGES)
@@ -168,6 +171,16 @@ def _extract_in_parallel(data: bytes, page_count: int, workers: int, progress: P
             if progress:
                 progress(done, page_count)
     return texts
+
+
+def _process_context():
+    """Start workers from a clean process, never by forking this one.
+
+    By the time a second PDF is read, the embedding model may be running threads in this process, and
+    forking a process with threads can deadlock. A fork server (or, on Windows, a fresh interpreter) avoids it.
+    """
+    methods = multiprocessing.get_all_start_methods()
+    return multiprocessing.get_context("forkserver" if "forkserver" in methods else "spawn")
 
 
 def _available_cpus() -> int:
