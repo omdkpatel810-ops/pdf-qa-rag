@@ -7,13 +7,14 @@
 
 Ask questions about your PDFs and get answers with page citations, using retrieval-augmented generation (RAG).
 
-> **Status: milestone 1 of 4 is done.** PDFs are read, cleaned and split into chunks that remember their pages. Search and answers come next ([roadmap](#roadmap)).
+> **Status: milestone 2 of 4 is done.** PDFs are read, cleaned and split into chunks that remember their pages, and `pdfqa search` finds the chunks that answer a question, by meaning and by keywords. Written answers come next ([roadmap](#roadmap)).
 
 **At a glance**
 
 - Reads the **1,239-page** University of Manitoba undergraduate calendar into 9,350 chunks in **86 s**. That's half the 162 s a single process takes, because pages are read in parallel, one process per core (this machine has 2).
 - Repairs words hyphenated at line ends using the document itself as the dictionary. It is right on **342 of 346** in two well-known papers, and keeps 47 real compounds like *fine-tuned* that the usual "always join" rule mangles into *finetuned*.
-- 152 tests with 100% line coverage. They include property-based tests (Hypothesis) that check, on 300 random documents per run, that every word lands in a chunk, in order, within the size limit.
+- Searches by meaning with **bge-small-en-v1.5**, an open embedding model that runs on your own CPU (no API key, no cost), and by keywords with BM25, then fuses the two. On the 9,350-chunk calendar, a question takes about **30 ms**.
+- 194 tests with 100% line coverage, plus 5 that run the real model. They include property-based tests (Hypothesis) that check, on 300 random documents per run, that every word lands in a chunk, in order, within the size limit.
 
 ## How it works
 
@@ -23,14 +24,19 @@ flowchart LR
     read --> clean["Clean<br/>headers, hyphens, links"]
     clean --> split["Split<br/>sentences into chunks"]
     split --> db[("Library<br/>SQLite")]
-    db -.-> embed["Embed and search<br/>milestone 2"]
-    embed -.-> answer["Answer with citations<br/>milestone 3"]
+    split --> embed["Embed<br/>bge-small, ONNX"]
+    embed --> db
+    question[Question] --> search["Search<br/>meaning + BM25, fused"]
+    db --> search
+    search -.-> answer["Answer with citations<br/>milestone 3"]
 ```
 
 1. **Read.** Every page's text, its printed page number (so citations can say "p. iv") and the title from the PDF's metadata. Long PDFs are read by several processes at once.
 2. **Clean.** PDFs store lines, not paragraphs, so the text needs repair before it's useful (see [What cleaning fixes](#what-cleaning-fixes)).
 3. **Split.** Pages become chunks of up to 200 words built from whole sentences. Each chunk repeats the end of the one before, and records the pages it came from.
 4. **Store.** Documents, cleaned pages and chunks go into one SQLite file. Re-splitting with other settings works from the stored pages, without the PDF.
+5. **Embed.** Each chunk becomes a vector of 384 numbers that sit close to the vectors of text meaning the same thing. They're stored beside the chunks, with a full-text index for keyword search.
+6. **Search.** A question is turned into a vector the same way and compared with every chunk, and also matched word by word. The two rankings are combined (see [Search](#search)).
 
 ## Quick start
 
@@ -45,16 +51,22 @@ pip install -e ".[dev]"
 
 python scripts/get_samples.py    # two papers and a UofM calendar section, into samples/
 pdfqa add samples/*.pdf
+pdfqa search "why divide the dot product by the square root of the dimension"
 ```
 
 ```text
-Added #1 "attention" (attention.pdf): 15 pages, 56 chunks in 1.3 s.
+Added #1 "attention" (attention.pdf): 15 pages, 56 chunks in 1.9 s.
   Removed 15 header or footer lines.
-Added #2 "bert" (bert.pdf): 16 pages, 90 chunks in 0.7 s.
+  Made 56 search vectors in 8.7 s.
+Added #2 "bert" (bert.pdf): 16 pages, 90 chunks in 0.8 s.
   Removed 1 header or footer line.
-Added #3 "Faculty of Science" (uofm-science.pdf): 19 pages, 124 chunks in 2.2 s.
+  Made 90 search vectors in 14.4 s.
+Added #3 "Faculty of Science" (uofm-science.pdf): 19 pages, 124 chunks in 3.2 s.
   Removed 38 header or footer lines.
+  Made 124 search vectors in 17.7 s.
 ```
+
+The first `add` downloads the embedding model (133 MB) and keeps it for next time. After that, everything runs offline.
 
 ## Usage
 
@@ -66,6 +78,8 @@ Added #3 "Faculty of Science" (uofm-science.pdf): 19 pages, 124 chunks in 2.2 s.
 | `pdfqa chunks ID [--page N] [--limit 10 \| --all]` | Print chunks with their pages |
 | `pdfqa rechunk ID --size N --overlap N` | Split again with other settings, from the stored pages |
 | `pdfqa remove ID` | Remove a document and its chunks |
+| `pdfqa search QUESTION [-k 5] [--mode hybrid\|semantic\|keyword] [--doc ID] [--full]` | The chunks that best answer a question, with their pages |
+| `pdfqa index` | Make search vectors for any chunks without them (say, after adding offline) |
 
 The library lives in `~/.pdfqa/library.db`. Use `--db PATH` or `PDFQA_DB` for another file.
 
@@ -90,6 +104,40 @@ error: catalog.pdf isn't a PDF, it's a web page. The download probably went wron
 error: outline.pdf is password-protected. Remove the password and try again.
 error: scan.pdf has no text to read. It's probably scanned images; text recognition (OCR) isn't supported yet.
 ```
+
+## Search
+
+```text
+$ pdfqa search "why divide the dot product by the square root of the dimension" -k 2
+── 1 · #1 "attention" p. 4 · meaning #2 · keywords #1 ──────────────────
+Figure 2: (left) Scaled Dot-Product Attention. (right) Multi-Head Attention consists of several attention layers running in parallel. of the values, where the weight assigned to each value is computed by a compatibility function of the query with the corresponding key. 3.2.1 Scaled Dot-Product Attention We call our particular attention "Scaled Dot-Product Attention" (Figure 2). The input consists of queries and …
+
+── 2 · #1 "attention" p. 4 · meaning #1 · keywords #2 ──────────────────
+While the two are similar in theoretical complexity, dot-product attention is much faster and more space-efficient in practice, since it can be implemented using highly optimized matrix multiplication code. While for small values of dk the two mechanisms perform similarly, additive attention outperforms dot product attention without scaling for larger values of dk [3]. We suspect that for large values …
+```
+
+The second chunk goes on to give the paper's answer: for large dimensions, dot products grow large and push the softmax into regions with tiny gradients. Each result says which document and page it's from, and where it ranked in each kind of search.
+
+Three ways to search, with `--mode`:
+
+| Mode | How | Good at |
+| --- | --- | --- |
+| `semantic` | The question's vector against every chunk's, by cosine similarity | Questions worded differently from the text: "Which course teaches coding?" finds "COMP 1012 teaches programming" |
+| `keyword` | BM25 over SQLite's full-text index, matching word endings (*credits* finds *credit*) | Exact terms a model can blur: course codes, names, numbers |
+| `hybrid` (default) | Reciprocal rank fusion: each chunk scores 1 / (60 + rank) from each list, added up | Both. A chunk near the top of either list rises, and one on both rises most |
+
+Fusing ranks rather than scores matters because BM25 and cosine scores aren't on the same scale. Which mode answers best on real questions is what milestone 4 measures.
+
+### Speed
+
+Measured on a 2-core machine with `scripts/search_speed.py`. The model and the vectors are loaded once, as a long-running app would, and each figure is the median of 4 questions run 5 times each.
+
+| Library | Chunks | Load model | Load vectors | `hybrid` | `semantic` | `keyword` |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| The three samples | 270 | 0.5 s | 2 ms | 13 ms | 11 ms | 1 ms |
+| UofM calendar, 1,239 pages | 9,350 | 0.5 s | 30 ms | 30 ms | 15 ms | 15 ms |
+
+Most of a semantic search is the model reading the question (about 10 ms). Comparing it with every chunk is one matrix product over 14 MB of vectors, so exact search is still quick at this size and an approximate index (FAISS, HNSW) isn't worth its complexity yet. The slow part is making the vectors, once per PDF: the calendar's 9,350 took 10 minutes, about 15 a second.
 
 ## What cleaning fixes
 
@@ -137,6 +185,11 @@ Measured on a 2-core Linux machine, Python 3.11.
 - **Sizes in words, not tokens.** Tokens depend on the embedding model, which milestone 2 picks. Words are close enough to choose sizes by now. Milestone 4 will compare sizes on real questions.
 - **SQLite.** One file, no server, and foreign keys with `ON DELETE CASCADE` keep pages and chunks tied to their document. The schema carries a version number so later milestones can add tables safely.
 - **The file's hash identifies a document.** Adding the same PDF twice, even under another name, points to the existing copy instead of storing it again.
+- **bge-small-en-v1.5 for embeddings.** It's one of the strongest small models at retrieval, and its 512-token limit fits the chunks: on the sample PDFs a 200-word chunk is 198 tokens at the median and 315 at the 95th percentile. The popular all-MiniLM-L6-v2 stops at 256 tokens, so it would have cut off the end of many chunks. bge-small has 33 million parameters, so it runs on a laptop CPU.
+- **ONNX Runtime, not PyTorch.** The same model, run with a much smaller install. The pipeline is the model's own: WordPiece tokens, the encoder, the [CLS] token's vector, scaled to length 1 ([`embed.py`](pdfqa/embed.py)). Its vectors match fastembed's, an independent implementation, to four decimal places, and a test checks that. The model is pinned to one revision, so stored vectors stay comparable.
+- **One chunk at a time.** Batching texts usually speeds models up, but a batch is padded to its longest text. On a 2-core machine, one at a time was fastest: 10 chunks a second, against 7 in batches of 32.
+- **Exact search, not an approximate index.** Comparing a question with every vector is one matrix product. That takes milliseconds even for the 9,350-chunk calendar, so an approximate index (HNSW and the like) would add complexity for nothing at this size.
+- **Clean worker processes.** Pages are read by worker processes that start from a fork server, not by forking pdfqa itself. After the first PDF, the embedding model is running threads, and forking a process with threads can deadlock.
 
 ## Limitations
 
@@ -144,20 +197,22 @@ Measured on a 2-core Linux machine, Python 3.11.
 - Maths comes out garbled (`q · k = Pdki=1 qiki`), as with most PDF text extraction.
 - A word hyphenated across a page break stays split, since each page is cleaned on its own.
 - Figure labels end up in the text where the PDF puts them.
+- A chunk longer than 512 tokens (a dense table, say) is embedded from its first 512 only. That was 4 of the 270 chunks in the samples. Keyword search still sees all of it.
 
 ## Tests
 
 ```bash
-python -m pytest --cov     # 152 tests, 100% coverage; fails under 95%
+python -m pytest --cov     # 194 tests, 100% coverage; fails under 95%
+PDFQA_REAL_MODEL=1 python -m pytest tests/test_model.py   # also the real model (downloads it)
 ruff check . && ruff format --check .
 ```
 
-Test PDFs are generated in the tests with ReportLab, with headers, footers, roman page numbers, passwords, blank "scanned" pages and damaged files, so the suite needs no downloads. GitHub Actions runs the suite on Python 3.10 and 3.13 on every push.
+Test PDFs are generated in the tests with ReportLab, with headers, footers, roman page numbers, passwords, blank "scanned" pages and damaged files, so the suite needs no downloads. A small stand-in embedder (words hashed into 64 numbers) tests storing, indexing and ranking vectors without the real model. The real model has its own tests: it must match fastembed's vectors and find the right passage for questions that share no words with it. GitHub Actions runs the suite on Python 3.10 and 3.13, and the real model's tests, on every push.
 
 ## Roadmap
 
 - [x] **Milestone 1:** parse PDFs and split them into chunks
-- [ ] **Milestone 2:** embeddings and vector search
+- [x] **Milestone 2:** embeddings and vector search
 - [ ] **Milestone 3:** answers with page citations in a simple UI
 - [ ] **Milestone 4:** measure accuracy on a 30-question test set
 
