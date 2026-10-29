@@ -1,4 +1,4 @@
-"""Add a PDF to the library: read it, clean it, chunk it and store it."""
+"""Add a PDF to the library: read it, clean it, chunk it, store it, and make a vector for each chunk."""
 
 from __future__ import annotations
 
@@ -10,7 +10,11 @@ from pathlib import Path
 from pdfqa import library
 from pdfqa.chunk import DEFAULT_OVERLAP, DEFAULT_SIZE, check_settings, chunk_pages
 from pdfqa.clean import clean_pages
+from pdfqa.embed import Embedder
+from pdfqa.embed import Progress as EmbedProgress
 from pdfqa.extract import PdfError, Progress, read_pdf
+
+EMBED_BATCH = 256  # vectors are saved after each batch, so stopping halfway keeps what's done
 
 
 @dataclass(frozen=True)
@@ -70,6 +74,34 @@ def add_pdf(
         unreadable_pages=raw.unreadable_pages,
         seconds=time.perf_counter() - started,
     )
+
+
+@dataclass(frozen=True)
+class Indexed:
+    chunks: int
+    seconds: float
+
+
+def index(
+    conn: sqlite3.Connection,
+    embedder: Embedder,
+    document_id: int | None = None,
+    progress: EmbedProgress | None = None,
+) -> Indexed:
+    """Make a vector for every chunk (of one document, or all) that hasn't one from this model yet."""
+    started = time.perf_counter()
+    todo = library.chunks_without_vectors(conn, embedder.name, document_id)
+    for start in range(0, len(todo), EMBED_BATCH):
+        batch = todo[start : start + EMBED_BATCH]
+        done = start
+
+        def report(count: int, _total: int, done: int = done) -> None:
+            if progress:
+                progress(done + count, len(todo))
+
+        vectors = embedder.passages([text for _, text in batch], report)
+        library.store_vectors(conn, embedder.name, [chunk_id for chunk_id, _ in batch], vectors)
+    return Indexed(len(todo), time.perf_counter() - started)
 
 
 def rechunk(conn: sqlite3.Connection, document_id: int, size: int, overlap: int) -> library.Document:

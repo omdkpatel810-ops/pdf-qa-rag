@@ -1,17 +1,24 @@
-"""The library: documents, their cleaned pages and their chunks, in one SQLite file."""
+"""The library: documents, their cleaned pages, their chunks and the chunks' vectors, in one SQLite file.
+
+Version 2 of the layout adds what search needs: a vector per chunk (tagged with the model that made it) and
+a full-text index of the chunks for keyword search. Triggers keep the index in step with the chunks, and a
+library made by version 1 is upgraded the first time it's opened.
+"""
 
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+import numpy as np
+
 from pdfqa.chunk import Chunk
 from pdfqa.clean import Page
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE documents (
@@ -46,6 +53,32 @@ CREATE TABLE chunks (
 
 -- Finding the chunks on a page is a range check on (page_start, page_end).
 CREATE INDEX chunks_by_page ON chunks (document_id, page_start, page_end);
+"""
+
+_SCHEMA_2 = """
+CREATE TABLE vectors (
+    chunk_id INTEGER PRIMARY KEY REFERENCES chunks (id) ON DELETE CASCADE,
+    model    TEXT    NOT NULL,
+    vector   BLOB    NOT NULL  -- float32, little-endian
+);
+CREATE INDEX vectors_by_model ON vectors (model);
+
+-- Keyword search: a full-text index over the chunks' text, ranked with BM25. "porter" matches word endings
+-- (credits, credit), "unicode61" folds case and accents.
+CREATE VIRTUAL TABLE chunk_words USING fts5 (
+    text, content = 'chunks', content_rowid = 'id', tokenize = 'porter unicode61 remove_diacritics 2'
+);
+CREATE TRIGGER chunk_words_insert AFTER INSERT ON chunks BEGIN
+    INSERT INTO chunk_words (rowid, text) VALUES (new.id, new.text);
+END;
+CREATE TRIGGER chunk_words_delete AFTER DELETE ON chunks BEGIN
+    INSERT INTO chunk_words (chunk_words, rowid, text) VALUES ('delete', old.id, old.text);
+END;
+CREATE TRIGGER chunk_words_update AFTER UPDATE OF text ON chunks BEGIN
+    INSERT INTO chunk_words (chunk_words, rowid, text) VALUES ('delete', old.id, old.text);
+    INSERT INTO chunk_words (rowid, text) VALUES (new.id, new.text);
+END;
+INSERT INTO chunk_words (chunk_words) VALUES ('rebuild');  -- index chunks made before version 2
 """
 
 
@@ -89,9 +122,18 @@ def connect(path: str | Path) -> sqlite3.Connection:
     if version > SCHEMA_VERSION:
         conn.close()
         raise RuntimeError(f"{path} was made by a newer version of pdfqa. Upgrade pdfqa to open it.")
-    if version == 0:
-        with conn:
-            conn.executescript(_SCHEMA + f"PRAGMA user_version = {SCHEMA_VERSION};")
+    try:
+        if version == 0:
+            conn.executescript(f"BEGIN; {_SCHEMA} {_SCHEMA_2} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;")
+        elif version == 1:
+            conn.executescript(f"BEGIN; {_SCHEMA_2} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;")
+    except sqlite3.OperationalError as error:
+        if conn.in_transaction:
+            conn.rollback()
+        conn.close()
+        if "fts5" in str(error):
+            raise RuntimeError("This Python's SQLite has no full-text search (FTS5), which pdfqa needs.") from error
+        raise
     return conn
 
 
@@ -189,6 +231,101 @@ def get_chunks(conn: sqlite3.Connection, document_id: int, page: int | None = No
         params += [page, page]
     rows = conn.execute(sql + " ORDER BY position", params)
     return [StoredChunk(**dict(row)) for row in rows]
+
+
+# Vectors -----------------------------------------------------------------------------------------------
+
+
+def chunks_without_vectors(
+    conn: sqlite3.Connection, model: str, document_id: int | None = None
+) -> list[tuple[int, str]]:
+    """(id, text) of each chunk with no vector from `model` yet, in document order."""
+    sql = (
+        "SELECT c.id, c.text FROM chunks c LEFT JOIN vectors v ON v.chunk_id = c.id AND v.model = ?"
+        " WHERE v.chunk_id IS NULL"
+    )
+    params: list[object] = [model]
+    if document_id is not None:
+        sql += " AND c.document_id = ?"
+        params.append(document_id)
+    return [(row[0], row[1]) for row in conn.execute(sql + " ORDER BY c.document_id, c.position", params)]
+
+
+def store_vectors(conn: sqlite3.Connection, model: str, chunk_ids: Sequence[int], vectors: np.ndarray) -> None:
+    rows = [(i, model, np.asarray(v, dtype="<f4").tobytes()) for i, v in zip(chunk_ids, vectors, strict=True)]
+    with conn:
+        conn.executemany("INSERT OR REPLACE INTO vectors (chunk_id, model, vector) VALUES (?, ?, ?)", rows)
+
+
+def load_vectors(conn: sqlite3.Connection, model: str, dimensions: int) -> tuple[np.ndarray, np.ndarray]:
+    """Every chunk's vector from `model`: their chunk ids, and a (chunks, dimensions) matrix."""
+    rows = conn.execute("SELECT chunk_id, vector FROM vectors WHERE model = ? ORDER BY chunk_id", (model,)).fetchall()
+    ids = np.fromiter((row[0] for row in rows), dtype=np.int64, count=len(rows))
+    matrix = np.frombuffer(b"".join(row[1] for row in rows), dtype="<f4").reshape(len(rows), dimensions)
+    return ids, matrix
+
+
+def vector_counts(conn: sqlite3.Connection, model: str) -> dict[int, int]:
+    """How many of each document's chunks have a vector from `model`."""
+    rows = conn.execute(
+        "SELECT c.document_id, count(*) FROM vectors v JOIN chunks c ON c.id = v.chunk_id"
+        " WHERE v.model = ? GROUP BY c.document_id",
+        (model,),
+    )
+    return {row[0]: row[1] for row in rows}
+
+
+# Keyword search ----------------------------------------------------------------------------------------
+
+
+def keyword_search(
+    conn: sqlite3.Connection, match: str, limit: int, document_id: int | None = None
+) -> list[tuple[int, float]]:
+    """(chunk id, BM25 score) of the chunks matching an FTS5 query, best first. Higher scores are better."""
+    sql = (
+        "SELECT w.rowid, -bm25(chunk_words) AS score FROM chunk_words w JOIN chunks c ON c.id = w.rowid"
+        " WHERE chunk_words MATCH ?"
+    )
+    params: list[object] = [match]
+    if document_id is not None:
+        sql += " AND c.document_id = ?"
+        params.append(document_id)
+    rows = conn.execute(sql + " ORDER BY score DESC, w.rowid LIMIT ?", [*params, limit])
+    return [(row[0], row[1]) for row in rows]
+
+
+@dataclass(frozen=True)
+class FoundChunk:
+    id: int
+    document_id: int
+    title: str
+    position: int
+    page_start: int
+    page_end: int
+    label_start: str  # the page numbers as printed, e.g. "iv"
+    label_end: str
+    text: str
+
+
+def get_found_chunks(conn: sqlite3.Connection, chunk_ids: Iterable[int]) -> dict[int, FoundChunk]:
+    """The chunks with these ids, with their document's title and printed page numbers."""
+    ids = list(chunk_ids)
+    if not ids:
+        return {}
+    marks = ", ".join("?" * len(ids))
+    rows = conn.execute(
+        f"""
+        SELECT c.id, c.document_id, d.title, c.position, c.page_start, c.page_end, c.text,
+               ps.label AS label_start, pe.label AS label_end
+        FROM chunks c
+        JOIN documents d ON d.id = c.document_id
+        JOIN pages ps ON ps.document_id = c.document_id AND ps.number = c.page_start
+        JOIN pages pe ON pe.document_id = c.document_id AND pe.number = c.page_end
+        WHERE c.id IN ({marks})
+        """,
+        ids,
+    )
+    return {row["id"]: FoundChunk(**dict(row)) for row in rows}
 
 
 def _document(row: sqlite3.Row) -> Document:

@@ -4,10 +4,11 @@ import io
 from pathlib import Path
 
 import pytest
-from helpers import LOREM, words_to_lines
+from helpers import LOREM, WordHashEmbedder, words_to_lines
 
 from pdfqa import __version__
 from pdfqa.cli import default_db_path, main
+from pdfqa.embed import EmbeddingError
 
 
 class Terminal(io.StringIO):
@@ -18,12 +19,17 @@ class Terminal(io.StringIO):
 
 
 @pytest.fixture
-def run(tmp_path: Path):
+def embedder() -> WordHashEmbedder:
+    return WordHashEmbedder()
+
+
+@pytest.fixture
+def run(tmp_path: Path, embedder):
     db = tmp_path / "library.db"
 
     def run(*args: str, err: io.StringIO | None = None) -> tuple[int, str, str]:
         out, err = io.StringIO(), err or io.StringIO()
-        code = main(["--db", str(db), *args], out=out, err=err)
+        code = main(["--db", str(db), *args], out=out, err=err, embedder=embedder)
         return code, out.getvalue(), err.getvalue()
 
     return run
@@ -258,3 +264,143 @@ def test_lists_many_page_numbers_briefly(run, make_pdf):
     _, out, _ = run("show", "1")
 
     assert "14 pages with no text: 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13 and 2 more" in out
+
+
+# Search vectors and search ------------------------------------------------------------------------------
+
+COURSE_PAGES = [
+    ["Students must complete 120 credit hours to graduate with a Bachelor of Science major."],
+    ["COMP 1012 teaches programming for scientists and engineers using Python."],
+    ["Furniture assembly takes about two hours for a large wardrobe in most homes. Every quote is free."],
+]
+
+
+class Offline:
+    """An embedder whose model can't be downloaded."""
+
+    dimensions = 64
+
+    def __init__(self, name: str = "test/offline") -> None:
+        self.name = name
+
+    def passages(self, texts, progress=None):
+        raise EmbeddingError("Couldn't download the model (OSError).")
+
+    def query(self, text):
+        raise EmbeddingError("Couldn't download the model (OSError).")
+
+
+def test_adding_makes_search_vectors(run, make_pdf, embedder):
+    code, out, _ = run("add", str(make_pdf("courses.pdf", COURSE_PAGES)), "--size", "20", "--overlap", "0")
+    assert code == 0
+    assert out.splitlines()[-1].startswith("  Made 3 search vectors in ")
+
+    _, out, _ = run("show", "1")
+    assert f"  Vectors  3 of 3, from {embedder.name}\n" in out
+
+    _, out, _ = run("index")
+    assert out.strip() == 'Every chunk already has a search vector. Ask something with: pdfqa search "your question"'
+
+
+def test_search_shows_the_best_chunks_with_their_pages(run, make_pdf):
+    run("add", str(make_pdf("courses.pdf", COURSE_PAGES, title="Faculty of Science")), "--size", "20", "--overlap", "0")
+
+    code, out, _ = run("search", "Which", "course", "teaches", "Python?", "-k", "2")
+
+    assert code == 0
+    first = out.split("\n\n")[0].splitlines()
+    assert first[0].startswith('── 1 · #1 "Faculty of Science" p. 2 · meaning #1 · keywords #1 ──')
+    assert first[1] == "COMP 1012 teaches programming for scientists and engineers using Python."
+    assert out.count("── ") == 2
+
+
+def test_search_modes_documents_and_length(run, make_pdf):
+    run("add", str(make_pdf("courses.pdf", COURSE_PAGES)), "--size", "20", "--overlap", "0")
+    run("add", str(make_pdf("long.pdf", [[("wardrobe " * 12).strip()] * 8])), "--size", "100", "--overlap", "0")
+
+    _, out, _ = run("search", "wardrobe", "--mode", "keyword", "--doc", "2")
+    assert "keywords #1" in out and "meaning" not in out and '#1 "courses"' not in out
+    assert out.splitlines()[1].endswith(" …") and len(out.splitlines()[1].split()) == 61
+
+    _, out, _ = run("search", "wardrobe", "--mode", "keyword", "--doc", "2", "--full")
+    assert len(out.splitlines()[1].split()) == 96
+
+    _, out, _ = run("search", "wardrobe", "--mode", "semantic", "-k", "1")
+    assert "meaning #1" in out and "keywords" not in out
+
+
+def test_search_with_no_match(run, make_pdf):
+    run("add", str(make_pdf("courses.pdf", COURSE_PAGES)))
+    code, out, _ = run("search", "zeppelin", "--mode", "keyword")
+    assert (code, out.strip()) == (0, "Nothing matched. Try other words, or search by meaning with --mode semantic.")
+
+
+def test_search_needs_vectors_for_meaning(tmp_path, make_pdf):
+    db = str(tmp_path / "library.db")
+    main(
+        ["--db", db, "add", str(make_pdf("courses.pdf", COURSE_PAGES))],
+        out=io.StringIO(),
+        err=io.StringIO(),
+        embedder=Offline(),
+    )
+    err = io.StringIO()
+    code = main(
+        ["--db", db, "search", "credits", "--mode", "semantic"], out=io.StringIO(), err=err, embedder=WordHashEmbedder()
+    )
+    assert code == 1 and "No chunks have vectors yet" in err.getvalue()
+
+
+def test_adding_works_offline_and_index_catches_up_later(tmp_path, make_pdf):
+    db = str(tmp_path / "library.db")
+    out, err = io.StringIO(), io.StringIO()
+
+    code = main(["--db", db, "add", str(make_pdf("courses.pdf", COURSE_PAGES))], out=out, err=err, embedder=Offline())
+    assert code == 0
+    assert "  No search vectors yet. Couldn't download the model (OSError). Then run: pdfqa index" in out.getvalue()
+
+    out, terminal = io.StringIO(), Terminal()
+    assert main(["--db", db, "index"], out=out, err=terminal, embedder=WordHashEmbedder()) == 0
+    assert out.getvalue().startswith("Made 1 search vector in ")
+    assert "chunks a second" in out.getvalue()
+
+    # The vectors are there, but the model that turns the question into one isn't.
+    err = io.StringIO()
+    assert main(["--db", db, "search", "credits"], out=out, err=err, embedder=Offline(WordHashEmbedder.name)) == 1
+    assert err.getvalue().strip().endswith("Or search by words alone with --mode keyword.")
+
+
+def test_index_shows_progress_on_a_terminal(tmp_path, make_pdf):
+    db = str(tmp_path / "library.db")
+    path = make_pdf("long.pdf", text_pages(6))
+    main(
+        ["--db", db, "add", str(path), "--size", "20", "--overlap", "0"],
+        out=io.StringIO(),
+        err=io.StringIO(),
+        embedder=Offline(),
+    )
+
+    terminal = Terminal()
+    main(["--db", db, "index"], out=io.StringIO(), err=terminal, embedder=WordHashEmbedder())
+    assert terminal.getvalue().startswith("\rMaking search vectors: ")
+    assert terminal.getvalue().endswith(" chunks\n")
+
+
+def test_rechunking_remakes_the_vectors(run, make_pdf, embedder):
+    run("add", str(make_pdf("courses.pdf", COURSE_PAGES)), "--size", "20", "--overlap", "0")
+    code, out, _ = run("rechunk", "1", "--size", "200", "--overlap", "0")
+    assert code == 0 and out.splitlines()[-1].startswith("  Made 1 search vector in ")
+    _, out, _ = run("show", "1")
+    assert "Vectors  1 of 1" in out
+
+
+def test_show_points_out_missing_vectors(tmp_path, make_pdf):
+    db = str(tmp_path / "library.db")
+    main(
+        ["--db", db, "add", str(make_pdf("courses.pdf", COURSE_PAGES))],
+        out=io.StringIO(),
+        err=io.StringIO(),
+        embedder=Offline(),
+    )
+    out = io.StringIO()
+    main(["--db", db, "show", "1"], out=out, err=io.StringIO(), embedder=WordHashEmbedder())
+    assert "Vectors  0 of 1, from test/word-hash. Make the rest with: pdfqa index" in out.getvalue()

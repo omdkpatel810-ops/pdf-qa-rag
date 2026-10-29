@@ -1,4 +1,4 @@
-"""Command line: pdfqa add | list | show | chunks | rechunk | remove."""
+"""Command line: pdfqa add | list | show | chunks | rechunk | remove | index | search."""
 
 from __future__ import annotations
 
@@ -12,11 +12,14 @@ from typing import TextIO
 
 from pdfqa import __version__, library
 from pdfqa.chunk import DEFAULT_OVERLAP, DEFAULT_SIZE
+from pdfqa.embed import BgeSmall, Embedder, EmbeddingError
 from pdfqa.extract import PdfError
-from pdfqa.ingest import Added, add_pdf, rechunk
+from pdfqa.ingest import Added, add_pdf, index, rechunk
+from pdfqa.search import MODES, VectorIndex, search
 
 _TITLE_WIDTH = 44
 _RULE_WIDTH = 72
+_FOUND_BY = {"semantic": "meaning", "keyword": "keywords"}
 
 
 def default_db_path() -> Path:
@@ -64,6 +67,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     remove = commands.add_parser("remove", help="remove a document from the library")
     remove.add_argument("document", type=int, metavar="ID")
+
+    commands.add_parser("index", help="make search vectors for any chunks that don't have them yet")
+
+    find = commands.add_parser("search", help="find the chunks that best answer a question")
+    find.add_argument("question", nargs="+", help="the question (quotes are optional)")
+    find.add_argument(
+        "--mode",
+        choices=MODES,
+        default="hybrid",
+        help="by meaning (semantic), by words (keyword), or both combined (hybrid, the default)",
+    )
+    find.add_argument("-k", "--limit", type=int, default=5, help="how many chunks to show (default: 5)")
+    find.add_argument("--doc", type=int, metavar="ID", help="only search this document")
+    find.add_argument("--full", action="store_true", help="print whole chunks instead of their first 60 words")
     return parser
 
 
@@ -79,10 +96,17 @@ def _chunk_options(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def main(argv: Sequence[str] | None = None, out: TextIO | None = None, err: TextIO | None = None) -> int:
+def main(
+    argv: Sequence[str] | None = None,
+    out: TextIO | None = None,
+    err: TextIO | None = None,
+    embedder: Embedder | None = None,
+) -> int:
+    """Run a command. `embedder` lets tests use a small stand-in instead of downloading the real model."""
     out = out or sys.stdout
     err = err or sys.stderr
     args = build_parser().parse_args(argv)
+    args.embedder = embedder or BgeSmall()
     try:
         conn = library.connect(args.db or default_db_path())
     except (OSError, sqlite3.Error, RuntimeError) as exc:
@@ -93,7 +117,7 @@ def main(argv: Sequence[str] | None = None, out: TextIO | None = None, err: Text
     except library.NotFound as exc:
         print(f"error: No document #{exc.args[0]}. See what's in the library with: pdfqa list", file=err)
         return 1
-    except ValueError as exc:
+    except (ValueError, EmbeddingError) as exc:
         print(f"error: {exc}", file=err)
         return 1
     finally:
@@ -115,6 +139,7 @@ def _add(conn: sqlite3.Connection, args: argparse.Namespace, out: TextIO, err: T
             continue
         if isinstance(result, Added):
             _print_added(result, out)
+            _make_vectors(conn, args.embedder, result.document.id, out, err)
         else:
             doc = result.document
             print(
@@ -133,6 +158,28 @@ def _progress(path: Path, err: TextIO):
         if total >= 20:
             end = "\n" if done == total else ""
             print(f"\rReading {path.name}: {done}/{total} pages", end=end, file=err, flush=True)
+
+    return report
+
+
+def _make_vectors(conn: sqlite3.Connection, embedder: Embedder, document_id: int, out: TextIO, err: TextIO) -> None:
+    """Make a document's search vectors. The document stays added even if that fails."""
+    try:
+        made = index(conn, embedder, document_id, _counter("Making search vectors", "chunks", err))
+    except EmbeddingError as exc:
+        print(f"  No search vectors yet. {exc} Then run: pdfqa index", file=out)
+        return
+    print(f"  Made {_plural(made.chunks, 'search vector')} in {made.seconds:.1f} s.", file=out)
+
+
+def _counter(label: str, unit: str, err: TextIO):
+    if not err.isatty():
+        return None
+
+    def report(done: int, total: int) -> None:
+        if total >= 20:
+            end = "\n" if done == total else ""
+            print(f"\r{label}: {done}/{total} {unit}", end=end, file=err, flush=True)
 
     return report
 
@@ -190,6 +237,9 @@ def _show(conn: sqlite3.Connection, args: argparse.Namespace, out: TextIO, err: 
         f"(average {round(sum(counts) / len(counts))}, shortest {min(counts)})",
         file=out,
     )
+    vectors = library.vector_counts(conn, args.embedder.name).get(doc.id, 0)
+    missing = "" if vectors == doc.chunk_count else ". Make the rest with: pdfqa index"
+    print(f"  Vectors  {vectors} of {doc.chunk_count}, from {args.embedder.name}{missing}", file=out)
     print(f"  Added    {doc.added_at:%Y-%m-%d %H:%M} UTC", file=out)
     return 0
 
@@ -234,12 +284,52 @@ def _rechunk(conn: sqlite3.Connection, args: argparse.Namespace, out: TextIO, er
         f"with a {doc.chunk_overlap}-word overlap (was {before.chunk_count}).",
         file=out,
     )
+    _make_vectors(conn, args.embedder, doc.id, out, err)
     return 0
 
 
 def _remove(conn: sqlite3.Connection, args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
     doc = library.remove_document(conn, args.document)
     print(f'Removed #{doc.id} "{doc.title}".', file=out)
+    return 0
+
+
+def _index(conn: sqlite3.Connection, args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
+    made = index(conn, args.embedder, progress=_counter("Making search vectors", "chunks", err))
+    if not made.chunks:
+        print('Every chunk already has a search vector. Ask something with: pdfqa search "your question"', file=out)
+    else:
+        rate = made.chunks / made.seconds if made.seconds else 0
+        print(
+            f"Made {_plural(made.chunks, 'search vector')} in {made.seconds:.1f} s ({rate:.0f} chunks a second).",
+            file=out,
+        )
+    return 0
+
+
+def _search(conn: sqlite3.Connection, args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
+    question = " ".join(args.question)
+    try:
+        vectors = VectorIndex(conn, args.embedder) if args.mode != "keyword" else None
+        hits = search(conn, question, index=vectors, mode=args.mode, limit=args.limit, document_id=args.doc)
+    except EmbeddingError as exc:
+        raise EmbeddingError(f"{exc} Or search by words alone with --mode keyword.") from exc
+    if not hits:
+        print("Nothing matched. Try other words, or search by meaning with --mode semantic.", file=out)
+        return 0
+    for number, hit in enumerate(hits, start=1):
+        chunk = hit.chunk
+        pages = (
+            f"p. {chunk.label_start}"
+            if chunk.page_start == chunk.page_end
+            else f"pp. {chunk.label_start}–{chunk.label_end}"
+        )
+        found_by = " · ".join(f"{_FOUND_BY[name]} #{rank}" for name, rank in hit.ranks.items())
+        heading = f'── {number} · #{chunk.document_id} "{_shorten(chunk.title, 32)}" {pages} · {found_by} '
+        print(heading + "─" * max(3, _RULE_WIDTH - len(heading)), file=out)
+        words = chunk.text.split()
+        print(chunk.text if args.full or len(words) <= 60 else " ".join(words[:60]) + " …", file=out)
+        print(file=out)
     return 0
 
 
@@ -250,6 +340,8 @@ _COMMANDS = {
     "chunks": _chunks,
     "rechunk": _rechunk,
     "remove": _remove,
+    "index": _index,
+    "search": _search,
 }
 
 

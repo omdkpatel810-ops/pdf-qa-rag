@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import hashlib
+import re
 from collections.abc import Sequence
 from pathlib import Path
 
+import numpy as np
 from pypdf import PdfWriter
 from pypdf.constants import PageLabelStyle
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
+
+from pdfqa.embed import unit
 
 LOREM = (
     "Assembly takes about two hours for a large wardrobe. "
@@ -75,3 +80,34 @@ def words_to_lines(text: str, width: int = 80) -> list[str]:
     if current:
         lines.append(current)
     return lines
+
+
+class WordHashEmbedder:
+    """A stand-in for the real model in tests: no download, instant, and the same answer every time.
+
+    Each word (lower-cased) adds 1 to one of 64 slots chosen by its hash, so texts that share words point
+    the same way. That's enough to test storing, loading and ranking vectors; the real model's quality is
+    checked separately.
+    """
+
+    name = "test/word-hash"
+    dimensions = 64
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def passages(self, texts, progress=None):
+        self.calls += 1
+        vectors = np.array([self._vector(text) for text in texts], dtype=np.float32).reshape(len(texts), 64)
+        if progress:
+            progress(len(texts), len(texts))
+        return vectors
+
+    def query(self, text):
+        return self._vector(text)
+
+    def _vector(self, text):
+        vector = np.zeros(64, dtype=np.float32)
+        for word in re.findall(r"\w+", text.lower()):
+            vector[int(hashlib.md5(word.encode()).hexdigest(), 16) % 64] += 1
+        return unit(vector)
