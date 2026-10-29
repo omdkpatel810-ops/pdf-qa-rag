@@ -10,7 +10,13 @@ readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
 authors = [{ name = "Om Patel" }]
-dependencies = ["pypdf[crypto]>=5.1"]
+dependencies = [
+    "pypdf[crypto]>=5.1",
+    "numpy>=1.24",
+    "onnxruntime>=1.17",  # runs the embedding model, without PyTorch
+    "tokenizers>=0.15",
+    "huggingface-hub>=0.20",  # downloads the model once and caches it
+]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-cov>=5", "hypothesis>=6.100", "reportlab>=4", "ruff>=0.6"]
