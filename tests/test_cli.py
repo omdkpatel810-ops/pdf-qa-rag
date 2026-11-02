@@ -542,3 +542,90 @@ def test_serve_starts_the_web_page(asking, monkeypatch):
     db, used, options = started[0]
     assert db.name == "shelf.db" and used is writer
     assert (options["port"], options["browser"], options["limit"]) == (8123, False, 4)
+
+
+# evaluate
+
+TEST_SET = [
+    {
+        "id": "wardrobe",
+        "question": "How long does wardrobe assembly take?",
+        "answer": ["two hours"],
+        "evidence": ["two hours"],
+    },
+    {"id": "comp", "question": "Which course teaches Python?", "answer": ["COMP 1012"], "evidence": ["COMP 1012"]},
+    {"id": "parking", "question": "What does parking cost?", "answer": None, "evidence": []},
+]
+
+
+@pytest.fixture
+def test_set(tmp_path):
+    import json
+
+    path = tmp_path / "questions.json"
+    path.write_text(json.dumps(TEST_SET))
+    return path
+
+
+def test_evaluate_search_only(asking, test_set):
+    code, out, err = asking("evaluate", str(test_set), "--search-only")
+    assert (code, err) == (0, "")
+    assert out.splitlines() == [
+        "Search: where the first passage holding the answer ranks, for 2 questions",
+        "  Mode        Top 1  Top 3  Top 5    MRR",
+        "  hybrid       100%   100%   100%   1.00",
+        "  semantic     100%   100%   100%   1.00",
+        "  keyword      100%   100%   100%   1.00",
+    ]
+
+
+def test_evaluate_answers_and_saves_the_details(asking, test_set, tmp_path):
+    import json
+
+    from helpers import ScriptedWriter
+
+    saved = tmp_path / "results.json"
+    writer = ScriptedWriter("It takes two hours [1].")
+    code, out, _ = asking("evaluate", str(test_set), "-k", "2", "--json", str(saved), writer=writer)
+    assert code == 0
+    lines = out.splitlines()
+    assert lines[6] == "Answers by test/scripted, from 2 passages each:"
+    assert lines[7].startswith("  ✓ wardrobe") and lines[7].endswith("It takes two hours [1].")
+    assert lines[8].startswith("  ✗ comp") and lines[9].startswith("  ✗ parking")
+    assert "  Right answers            1 of 2 (50%)" in lines
+    assert "    the answer was among the passages   2 of 2 (100%)" in lines
+    assert "    right, citing a passage holding it  1 of 1 (100%)" in lines
+    # The comp answer is wrong, but its [1] is the COMP 1012 passage, so both citations hold an answer.
+    assert "  Citations to a passage holding the answer  2 of 2 (100%)" in lines
+    assert "  Unanswerable questions declined   0 of 1 (0%)" in lines
+    assert lines[-1] == f"Saved every result to {saved}."
+
+    report = json.loads(saved.read_text())
+    assert report["questions"] == 3 and report["search"]["hybrid"] == {"wardrobe": 1, "comp": 1}
+    first = report["answers"][0]
+    assert (first["id"], first["right"], first["cited"], first["supported"]) == ("wardrobe", True, [1], True)
+
+
+def test_evaluate_with_long_answers_and_no_citations(asking, test_set):
+    from helpers import ScriptedWriter
+
+    long_reply = "word " * 20
+    code, out, _ = asking("evaluate", str(test_set), writer=ScriptedWriter(long_reply))
+    assert code == 0
+    assert "word word …" in out
+    assert "  Citations to a passage holding the answer  0 of 0" in out.splitlines()
+
+
+def test_evaluate_needs_documents_and_a_good_test_set(tmp_path, embedder, test_set):
+    out, err = io.StringIO(), io.StringIO()
+    code = main(["--db", str(tmp_path / "empty.db"), "evaluate", str(test_set)], out=out, err=err, embedder=embedder)
+    assert code == 1 and err.getvalue() == "error: The library is empty. Add the PDFs the test set asks about first.\n"
+
+    err = io.StringIO()
+    code = main(
+        ["--db", str(tmp_path / "empty.db"), "evaluate", str(tmp_path / "nope.json")],
+        out=out,
+        err=err,
+        embedder=embedder,
+    )
+    assert code == 1 and err.getvalue().startswith("error: Can't read the test set")

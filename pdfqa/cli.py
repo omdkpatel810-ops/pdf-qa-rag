@@ -1,8 +1,9 @@
-"""Command line: pdfqa add | list | show | chunks | rechunk | remove | index | search | ask | serve."""
+"""Command line: pdfqa add | list | show | chunks | rechunk | remove | index | search | ask | serve | evaluate."""
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sqlite3
 import sys
@@ -10,7 +11,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TextIO
 
-from pdfqa import __version__, library
+from pdfqa import __version__, evaluate, library
 from pdfqa.answer import Done, Sources, Text, ask
 from pdfqa.chunk import DEFAULT_OVERLAP, DEFAULT_SIZE
 from pdfqa.embed import BgeSmall, Embedder, EmbeddingError
@@ -89,6 +90,12 @@ def build_parser() -> argparse.ArgumentParser:
     _answer_options(question)
     question.add_argument("--doc", type=int, metavar="ID", help="only use this document")
 
+    test = commands.add_parser("evaluate", help="measure search and answers on a test set of questions")
+    test.add_argument("questions", type=Path, metavar="QUESTIONS.json", help="the test set (see eval/questions.json)")
+    test.add_argument("--search-only", action="store_true", help="measure search only, without writing answers")
+    test.add_argument("--json", type=Path, metavar="FILE", help="also save every question's results to FILE")
+    _answer_options(test)
+
     serve = commands.add_parser("serve", help="open the web page for asking questions and adding PDFs")
     serve.add_argument("--port", type=int, default=8000, help="port on this computer (default: 8000)")
     serve.add_argument("--no-browser", action="store_true", help="don't open the page in a browser")
@@ -131,7 +138,7 @@ def main(
     args = build_parser().parse_args(argv)
     args.embedder = embedder or BgeSmall()
     args.writer = writer
-    if args.command in ("ask", "serve") and writer is None:
+    if args.command in ("ask", "serve", "evaluate") and writer is None:
         try:
             args.writer = make_writer(args.model)
         except ValueError as exc:
@@ -432,6 +439,71 @@ class _Status:
             self.width = 0
 
 
+def _evaluate(conn: sqlite3.Connection, args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
+    questions = evaluate.load_questions(args.questions)
+    if not library.list_documents(conn):
+        raise ValueError("The library is empty. Add the PDFs the test set asks about first.")
+    vectors = VectorIndex(conn, args.embedder)
+    answerable = sum(q.answerable for q in questions)
+    print(f"Search: where the first passage holding the answer ranks, for {answerable} questions", file=out)
+    print(f"  {'Mode':<10}{'Top 1':>7}{'Top 3':>7}{'Top 5':>7}{'MRR':>7}", file=out)
+    ranks = {}
+    for mode in MODES:
+        found = evaluate.find(conn, questions, index=vectors, mode=mode)
+        ranks[mode] = {f.question.id: f.rank for f in found}
+        recalls = "".join(f"{evaluate.recall(found, k):>7.0%}" for k in (1, 3, 5))
+        print(f"  {mode:<10}{recalls}{evaluate.mrr(found):>7.2f}", file=out)
+    report: dict = {"questions": len(questions), "search": ranks}
+    if not args.search_only:
+        print(file=out)
+        print(f"Answers by {args.writer.name}, from {_plural(args.limit, 'passage')} each:", file=out)
+
+        def line(scored: evaluate.Scored) -> None:
+            mark = "✓" if scored.right else "✗"
+            words = scored.answer.text.split()
+            text = " ".join(words[:16]) + (" …" if len(words) > 16 else "")
+            print(f"  {mark} {scored.question.id:<30} {scored.answer.seconds:5.1f} s  {text}", file=out, flush=True)
+
+        results = evaluate.answer_all(
+            conn, questions, index=vectors, writer=args.writer, limit=args.limit, progress=line
+        )
+        total = evaluate.summarize(results)
+        print(file=out)
+        _report(total, out)
+        report["answers"] = [
+            {
+                "id": r.question.id,
+                "question": r.question.question,
+                "right": r.right,
+                "answer": r.answer.text,
+                "found": r.answer.found,
+                "cited": r.answer.cited,
+                "retrieved": r.retrieved,
+                "supported": r.supported,
+                "good_citations": r.good_citations,
+                "seconds": round(r.answer.seconds, 1),
+            }
+            for r in results
+        ]
+    if args.json:
+        args.json.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        print(f"Saved every result to {args.json}.", file=out)
+    return 0
+
+
+def _report(total: evaluate.Summary, out: TextIO) -> None:
+    def share(part: int, whole: int) -> str:
+        return f"{part} of {whole}" + (f" ({part / whole:.0%})" if whole else "")
+
+    print(f"  Right answers            {share(total.right, total.answerable)}", file=out)
+    print(f"    the answer was among the passages   {share(total.retrieved, total.answerable)}", file=out)
+    print(f"    said the documents don't say        {total.abstained}", file=out)
+    print(f"    right, citing a passage holding it  {share(total.supported, total.right)}", file=out)
+    print(f"  Citations to a passage holding the answer  {share(total.good_citations, total.citations)}", file=out)
+    print(f"  Unanswerable questions declined   {share(total.declined, total.unanswerable)}", file=out)
+    print(f"  Median time per answer   {total.seconds:.1f} s", file=out)
+
+
 def _serve(conn: sqlite3.Connection, args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
     from pdfqa.web import serve
 
@@ -458,6 +530,7 @@ _COMMANDS = {
     "search": _search,
     "ask": _ask,
     "serve": _serve,
+    "evaluate": _evaluate,
 }
 
 
