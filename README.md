@@ -16,7 +16,7 @@ Ask questions about your PDFs and get answers with page citations, using retriev
 - Searches by meaning with **bge-small-en-v1.5**, an open embedding model that runs on your own CPU (no API key, no cost), and by keywords with BM25, then fuses the two. On the 9,350-chunk calendar, a question takes about **30 ms**.
 - Writes the answer with **Qwen3-1.7B on your own computer**, through a generation loop written here on ONNX Runtime (no PyTorch, no API key), or with Claude if you have a key. Every citation is checked against the passages the model was given, so none points at nothing.
 - On a 30-question test set it answers **22 of 25** answerable questions right with the free local model, and declines **all 5** that the PDFs don't answer instead of making something up. Search puts the passage holding the answer in its top 5 for **24 of 25**. Every answer is [saved](eval/results/qwen3-1.7b.json) and was checked by hand.
-- 289 tests with 100% line coverage, plus 7 that run the real models. They include property-based tests (Hypothesis) that check, on 300 random documents per run, that every word lands in a chunk, in order, within the size limit.
+- 297 tests with 100% line coverage, plus 7 that run the real models. They include property-based tests (Hypothesis) that check, on 300 random documents per run, that every word lands in a chunk, in order, within the size limit.
 
 ![The web page: a question about the Transformer paper is typed, the answer is written with citations to page 4, and a citation opens the passage highlighted on its page. Shown at 4x speed.](docs/demo.gif)
 
@@ -350,7 +350,7 @@ Measured on a 2-core Linux machine, Python 3.11.
 ## Tests
 
 ```bash
-python -m pytest --cov     # 289 tests, 100% coverage; fails under 95%
+python -m pytest --cov     # 297 tests, 100% coverage; fails under 95%
 PDFQA_REAL_MODEL=1 python -m pytest tests/test_model.py   # also the real models (downloads them)
 ruff check . && ruff format --check .
 ```
