@@ -7,7 +7,7 @@
 
 Ask questions about your PDFs and get answers with page citations, using retrieval-augmented generation (RAG).
 
-> **Status: milestone 3 of 4 is done.** `pdfqa ask` answers a question from your PDFs in a few sentences, citing the page each fact came from, and `pdfqa serve` opens a web page for the same. Measuring how often it's right comes next ([roadmap](#roadmap)).
+> **Status: all 4 milestones are done.** `pdfqa ask` answers a question from your PDFs in a few sentences, citing the page each fact came from, `pdfqa serve` opens a web page for the same, and `pdfqa evaluate` measures how often it's right ([accuracy](#accuracy)).
 
 **At a glance**
 
@@ -15,7 +15,8 @@ Ask questions about your PDFs and get answers with page citations, using retriev
 - Repairs words hyphenated at line ends using the document itself as the dictionary. It is right on **342 of 346** in two well-known papers, and keeps 47 real compounds like *fine-tuned* that the usual "always join" rule mangles into *finetuned*.
 - Searches by meaning with **bge-small-en-v1.5**, an open embedding model that runs on your own CPU (no API key, no cost), and by keywords with BM25, then fuses the two. On the 9,350-chunk calendar, a question takes about **30 ms**.
 - Writes the answer with **Qwen3-1.7B on your own computer**, through a generation loop written here on ONNX Runtime (no PyTorch, no API key), or with Claude if you have a key. Every citation is checked against the passages the model was given, so none points at nothing.
-- 266 tests with 100% line coverage, plus 7 that run the real models. They include property-based tests (Hypothesis) that check, on 300 random documents per run, that every word lands in a chunk, in order, within the size limit.
+- On a 30-question test set it answers **22 of 25** answerable questions right with the free local model, and declines **all 5** that the PDFs don't answer instead of making something up. Search puts the passage holding the answer in its top 5 for **24 of 25**. Every answer is [saved](eval/results/qwen3-1.7b.json) and was checked by hand.
+- 289 tests with 100% line coverage, plus 7 that run the real models. They include property-based tests (Hypothesis) that check, on 300 random documents per run, that every word lands in a chunk, in order, within the size limit.
 
 ![The web page answering "Why divide the dot product by the square root of the dimension?" from the Transformer paper, with two citations to page 4 and the passages they point to](docs/answer.png)
 
@@ -101,6 +102,7 @@ That time includes loading the model (about 20 s); `pdfqa serve` loads it once.
 | `pdfqa index` | Make search vectors for any chunks without them (say, after adding offline) |
 | `pdfqa ask QUESTION [-k 5] [--model local\|claude] [--doc ID]` | An answer with page citations, written from the `-k` best passages |
 | `pdfqa serve [--port 8000] [--model ...] [--no-browser]` | The web page: add PDFs, ask, and click a citation to see it on its page |
+| `pdfqa evaluate QUESTIONS.json [--search-only] [--model ...] [--json FILE]` | Measure search and answers on a test set ([format](pdfqa/evaluate.py), [example](eval/questions.json)) |
 
 The library lives in `~/.pdfqa/library.db`. Use `--db PATH` or `PDFQA_DB` for another file.
 
@@ -147,7 +149,7 @@ Three ways to search, with `--mode`:
 | `keyword` | BM25 over SQLite's full-text index, matching word endings (*credits* finds *credit*) | Exact terms a model can blur: course codes, names, numbers |
 | `hybrid` (default) | Reciprocal rank fusion: each chunk scores 1 / (60 + rank) from each list, added up | Both. A chunk near the top of either list rises, and one on both rises most |
 
-Fusing ranks rather than scores matters because BM25 and cosine scores aren't on the same scale. Which mode answers best on real questions is what milestone 4 measures.
+Fusing ranks rather than scores matters because BM25 and cosine scores aren't on the same scale. On the test set, hybrid comes out best, though only just ahead of meaning alone ([accuracy](#accuracy)).
 
 ### Speed
 
@@ -223,6 +225,58 @@ Most of the wait is reading: five passages make a prompt of about 1,100 tokens, 
 
 It listens on 127.0.0.1 only, and two checks keep other websites open in the same browser from using it. Every request must name this server as its Host, which defeats DNS rebinding (a site pointing its own name at 127.0.0.1). Requests that change anything must carry an `X-Pdfqa` header, which another site's page can't add without permission the server never gives.
 
+## Accuracy
+
+`pdfqa evaluate eval/questions.json` runs the [test set](eval/questions.json): 30 questions about the three sample PDFs. Eight are on the Transformer paper, eight on BERT, nine on the UofM Faculty of Science calendar, and five are questions none of them answer (parking, tuition, GPT-3, the year UofM was founded, ResNet-50). Each answerable question says what a right answer must contain and what text marks a passage holding the answer, checked against the PDF. Judging passages by their text rather than their page lets one test set compare chunk sizes.
+
+### Search
+
+Where the first passage holding the answer ranks, for the 25 answerable questions. MRR (mean reciprocal rank) scores first place 1, second 0.5, third 0.33, and so on.
+
+| Mode | Top 1 | Top 3 | Top 5 | MRR |
+| --- | ---: | ---: | ---: | ---: |
+| **hybrid** (default) | **80%** | 88% | **96%** | **0.86** |
+| semantic (meaning) | 76% | 88% | 96% | 0.83 |
+| keyword (BM25) | 64% | 84% | 88% | 0.75 |
+
+| Words per chunk, hybrid search | Chunks | Top 1 | Top 3 | Top 5 | MRR |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 100 | 442 | 68% | 80% | 92% | 0.76 |
+| **200** (default) | 270 | **80%** | 88% | **96%** | **0.86** |
+| 300 | 202 | 76% | 92% | 96% | 0.85 |
+
+- **Hybrid wins, narrowly.** It ranks the answer first in 20 of 25, against 19 for meaning alone and 16 for keywords alone. Keywords alone miss 3 of 25 even in their top 5.
+- **200 words stays.** 100-word chunks do worse on every measure, probably because an answer gets cut off from the words that would find it. 300 ties at the top 5 but ranks the answer first less often (`scripts/chunk_sizes.py`).
+- **The one miss:** "How does the Transformer encode the position of each word?" The sine-and-cosine passage ranks 5th by meaning but 7th after fusion, because keyword search doesn't find it at all.
+- **Fusion can cost a place.** For "How many credit hours does a B.Sc. Major need to graduate?", meaning search ranks the "120 credit hours" passage first. Keyword search misses it, and fusion drops it to 5th, just inside what the model reads.
+
+### Answers
+
+Qwen3-1.7B on this computer, reading the five best passages for each question:
+
+| | |
+| --- | ---: |
+| Right answers | **22 of 25 (88%)** |
+| The answer was among the five passages | 24 of 25 |
+| Right, and citing a passage that holds the answer | 20 of 22 |
+| Citations that point at a passage holding the answer | 24 of 30 (80%) |
+| Unanswerable questions declined ("The documents don't say") | **5 of 5** |
+| Median time per answer, 2-core machine | 32 s |
+
+Every answer is saved in [`eval/results/qwen3-1.7b.json`](eval/results/qwen3-1.7b.json), and I checked all 30 by hand. The hand check agreed with every automatic right-or-wrong mark. It also caught two evidence patterns that were too narrow: one missed BERT "trained for 1M steps", and the other a GPA written as "at least 3.00". Those made good citations count as bad, so the patterns now accept both wordings, and the figures above come from the re-run. Greedy decoding gave the same 30 answers, word for word.
+
+The three wrong answers:
+
+| Question | It said | Why |
+| --- | --- | --- |
+| Why are dot products scaled by 1/√dk? | To keep the softmax "numerically stable" when dot products are large | Half right. The paper's reason is that large dot products push the softmax into regions with extremely small gradients. The passage saying so was among the five, but it cited two others. |
+| How does the Transformer encode the position of each word? | A description of self-attention | Search miss: the passage on sine and cosine encodings ranked 7th, so the model never saw it. |
+| What minimum GPA does a Computer Science Major need? | 2.00 | A misreading: both passages it cited say "2.00 (2.50 for Computer Science)". |
+
+Two right answers had citation trouble. For BERT's pre-training tasks it cited the title page instead of page 2, as described under [Limitations](#limitations). For BERT's training data it wrote "(2,500M words]4", a broken bracket, so the citation was lost. One more right answer was muddled: it gave BERT's 1M training steps correctly, then added the Transformer paper's 300,000 steps and said the total "is not explicitly stated".
+
+**What this says.** Search is the stronger half: the answer was in front of the model 24 times out of 25, and two of the three mistakes happened with it there. A larger model would likely close some of that gap. `pdfqa evaluate eval/questions.json --model claude` runs the same test with Claude for anyone with a key; I haven't run it. Next on the search side is weighting the fusion, so a confident meaning match isn't pulled down by a keyword miss. And 30 questions is a small set: each one is 4 points, so differences of one or two questions between settings are within noise.
+
 ## What cleaning fixes
 
 Every fix below came from looking at real PDFs, not from a list of guesses.
@@ -266,7 +320,7 @@ Measured on a 2-core Linux machine, Python 3.11.
 
 - **pypdf for reading.** On the sample PDFs it was 1.7x faster than pdfminer.six and kept table rows together ("4 120 Yes"), where pdfminer moved them away from their program names. pypdfium2 was 14x faster still, but split the UofM calendar into one letter per line. PyMuPDF is fast too, but its AGPL licence doesn't fit an MIT project.
 - **Parallel pages, not a faster library.** Text extraction was 96% of the time on the full calendar. Spreading pages over processes kept pypdf's quality, halved the time on 2 cores and scales with more. If processes aren't allowed (some sandboxes), it falls back to reading pages one by one.
-- **Sizes in words, not tokens.** Tokens depend on the embedding model, which milestone 2 picks. Words are close enough to choose sizes by now. Milestone 4 will compare sizes on real questions.
+- **Sizes in words, not tokens.** Tokens depend on the embedding model, so words are the steadier unit. 200 words stayed the default after the test set compared 100, 200 and 300 ([accuracy](#accuracy)).
 - **SQLite.** One file, no server, and foreign keys with `ON DELETE CASCADE` keep pages and chunks tied to their document. The schema carries a version number so later milestones can add tables safely.
 - **The file's hash identifies a document.** Adding the same PDF twice, even under another name, points to the existing copy instead of storing it again.
 - **bge-small-en-v1.5 for embeddings.** It's one of the strongest small models at retrieval, and its 512-token limit fits the chunks: on the sample PDFs a 200-word chunk is 198 tokens at the median and 315 at the 95th percentile. The popular all-MiniLM-L6-v2 stops at 256 tokens, so it would have cut off the end of many chunks. bge-small has 33 million parameters, so it runs on a laptop CPU.
@@ -286,27 +340,27 @@ Measured on a 2-core Linux machine, Python 3.11.
 - A word hyphenated across a page break stays split, since each page is cleaned on its own.
 - Figure labels end up in the text where the PDF puts them.
 - A chunk longer than 512 tokens (a dense table, say) is embedded from its first 512 only. That was 4 of the 270 chunks in the samples. Keyword search still sees all of it.
-- The model sees only the five best passages. Asked how many credit hours a B.Sc. Major needs, it never saw the passage saying 120, so it took the 24 to 30 hours needed to *declare* a Major for the total. That's a wrong answer, with a citation that makes it look right.
-- A citation can point at the wrong passage when the answer is right. Asked BERT's two pre-training tasks, it named them correctly but cited the paper's title page rather than page 2, where they're described. Milestone 4 will count both kinds of mistake.
+- The model sees only the five best passages. Asked "How many credit hours does a B.Sc. Major need?", it never saw the passage saying 120, so it took the 24 to 30 hours needed to *declare* a Major for the total. That's a wrong answer, with a citation that makes it look right. (Worded "…need to graduate?" in the test set, search ranked the right passage 5th and the answer was right.)
+- A citation can point at the wrong passage when the answer is right. Asked BERT's two pre-training tasks, it named them correctly but cited the paper's title page rather than page 2, where they're described. On the test set, 6 of 30 citations pointed at a passage without the answer.
 - Qwen3-1.7B can miss a paraphrase. Asked how long it takes "to put a closet together", it said the documents don't say, though a passage covered wardrobe assembly.
 - The web page is for one person on their own computer. It isn't built to be put on the internet.
 
 ## Tests
 
 ```bash
-python -m pytest --cov     # 266 tests, 100% coverage; fails under 95%
+python -m pytest --cov     # 289 tests, 100% coverage; fails under 95%
 PDFQA_REAL_MODEL=1 python -m pytest tests/test_model.py   # also the real models (downloads them)
 ruff check . && ruff format --check .
 ```
 
-Test PDFs are generated in the tests with ReportLab, with headers, footers, roman page numbers, passwords, blank "scanned" pages and damaged files, so the suite needs no downloads. A small stand-in embedder (words hashed into 64 numbers) tests storing, indexing and ranking vectors without the real model. The generation loop is tested with a pretend model that predicts "the next number" and checks the attention cache on every pass, and answers with a scripted writer. The web server's tests run it for real on a free port, uploads included. The real models have their own tests: the embedder must match fastembed's vectors and find the right passage for questions that share no words with it, and Qwen3 must cite the passage that answers a question and say so when none does. GitHub Actions runs the suite on Python 3.10 and 3.13, and the real models' tests, on every push.
+Test PDFs are generated in the tests with ReportLab, with headers, footers, roman page numbers, passwords, blank "scanned" pages and damaged files, so the suite needs no downloads. A small stand-in embedder (words hashed into 64 numbers) tests storing, indexing and ranking vectors without the real model. The generation loop is tested with a pretend model that predicts "the next number" and checks the attention cache on every pass, and answers with a scripted writer. The web server's tests run it for real on a free port, uploads included. The real models have their own tests: the embedder must match fastembed's vectors and find the right passage for questions that share no words with it, and Qwen3 must cite the passage that answers a question and say so when none does. The evaluation code is tested on a small library with the same stand-ins, from loading a test set to the final report. GitHub Actions runs the suite on Python 3.10 and 3.13, and the real models' tests, on every push.
 
 ## Roadmap
 
 - [x] **Milestone 1:** parse PDFs and split them into chunks
 - [x] **Milestone 2:** embeddings and vector search
 - [x] **Milestone 3:** answers with page citations in a simple UI
-- [ ] **Milestone 4:** measure accuracy on a 30-question test set
+- [x] **Milestone 4:** measure accuracy on a 30-question test set
 
 ## License
 
