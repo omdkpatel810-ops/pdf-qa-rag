@@ -18,7 +18,9 @@ Ask questions about your PDFs and get answers with page citations, using retriev
 - On a 30-question test set it answers **22 of 25** answerable questions right with the free local model, and declines **all 5** that the PDFs don't answer instead of making something up. Search puts the passage holding the answer in its top 5 for **24 of 25**. Every answer is [saved](eval/results/qwen3-1.7b.json) and was checked by hand.
 - 289 tests with 100% line coverage, plus 7 that run the real models. They include property-based tests (Hypothesis) that check, on 300 random documents per run, that every word lands in a chunk, in order, within the size limit.
 
-![The web page answering "Why divide the dot product by the square root of the dimension?" from the Transformer paper, with two citations to page 4 and the passages they point to](docs/answer.png)
+![The web page: a question about the Transformer paper is typed, the answer is written with citations to page 4, and a citation opens the passage highlighted on its page. Shown at 4x speed.](docs/demo.gif)
+
+*Real answers at 4x speed, from Qwen3-1.7B on a 2-core machine; the first answer includes loading the model. Made with `scripts/make_demo_gif.py`.*
 
 ## How it works
 
@@ -170,7 +172,7 @@ How an answer is made ([`answer.py`](pdfqa/answer.py)):
 
 1. Hybrid search picks the five best passages.
 2. The model gets the question, the passages numbered [1] to [5] with their document and page, then the question again with the rules: answer in two to four sentences from the sources only, end each sentence with its source's number, write plain text, and if the sources don't answer it, say only "The documents don't say."
-3. The reply is tidied. "Source [2]", "[Source 2]", "[2, 3]" and "[2-4]" become [2], [2][3] and [2][3][4]. Numbers with no passage behind them are dropped. A "The documents don't say." tacked onto an answer that does cite something is removed.
+3. The reply is tidied. "Source [2]", "[Source 2]", "[2, 3]" and "[2-4]" become [2], [2][3] and [2][3][4]. Numbers with no passage behind them are dropped. A "The documents don't say." tacked onto an answer that does cite something is removed. Maths written as LaTeX, which a small model does even when told not to, becomes plain text the way the PDF writes it: `$\frac{1}{\sqrt{d_k}}$` becomes 1/√dk, while "$5 and $10" stays as it is.
 4. Each remaining [n] is a passage, and each passage knows its document and printed page numbers. On the web page the number is a button that opens the passage, highlighted on its page.
 
 When the documents don't say, `pdfqa ask` says so and lists the closest passages, rather than guessing.

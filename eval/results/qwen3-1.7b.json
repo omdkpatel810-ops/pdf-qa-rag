@@ -96,13 +96,13 @@
       "retrieved": true,
       "supported": true,
       "good_citations": 1,
-      "seconds": 54.5
+      "seconds": 48.8
     },
     {
       "id": "attention-scaling",
       "question": "Why are the dot products scaled by 1/√dk in attention?",
       "right": false,
-      "answer": "The dot products in attention mechanisms are scaled by $1/\\sqrt{dk}$ to prevent the softmax function from becoming numerically unstable when the dot products are large [4]. This scaling helps maintain the numerical stability of the model during training [5].",
+      "answer": "The dot products in attention mechanisms are scaled by 1/√dk to prevent the softmax function from becoming numerically unstable when the dot products are large [4]. This scaling helps maintain the numerical stability of the model during training [5].",
       "found": true,
       "cited": [
         4,
@@ -111,7 +111,7 @@
       "retrieved": true,
       "supported": false,
       "good_citations": 0,
-      "seconds": 33.2
+      "seconds": 33.0
     },
     {
       "id": "attention-heads",
@@ -125,7 +125,7 @@
       "retrieved": true,
       "supported": true,
       "good_citations": 1,
-      "seconds": 24.1
+      "seconds": 23.5
     },
     {
       "id": "attention-bleu",
@@ -139,7 +139,7 @@
       "retrieved": true,
       "supported": true,
       "good_citations": 1,
-      "seconds": 40.9
+      "seconds": 40.4
     },
     {
       "id": "attention-training-time",
@@ -153,7 +153,7 @@
       "retrieved": true,
       "supported": true,
       "good_citations": 1,
-      "seconds": 32.5
+      "seconds": 31.7
     },
     {
       "id": "attention-optimizer",
@@ -167,7 +167,7 @@
       "retrieved": true,
       "supported": true,
       "good_citations": 1,
-      "seconds": 35.9
+      "seconds": 35.4
     },
     {
       "id": "attention-dropout",
@@ -181,7 +181,7 @@
       "retrieved": true,
       "supported": true,
       "good_citations": 1,
-      "seconds": 30.6
+      "seconds": 29.9
     },
     {
       "id": "attention-positions",
@@ -195,7 +195,7 @@
       "retrieved": false,
       "supported": false,
       "good_citations": 0,
-      "seconds": 34.5
+      "seconds": 31.7
     },
     {
       "id": "bert-tasks",
@@ -209,7 +209,7 @@
       "retrieved": true,
       "supported": false,
       "good_citations": 0,
-      "seconds": 28.8
+      "seconds": 26.8
     },
     {
       "id": "bert-mask-rate",
@@ -223,7 +223,7 @@
       "retrieved": true,
       "supported": true,
       "good_citations": 1,
-      "seconds": 29.5
+      "seconds": 28.1
     },
     {
       "id": "bert-mask-token",
@@ -239,7 +239,7 @@
       "retrieved": true,
       "supported": true,
       "good_citations": 2,
-      "seconds": 45.5
+      "seconds": 45.1
     },
     {
       "id": "bert-large-size",
@@ -253,7 +253,7 @@
       "retrieved": true,
       "supported": true,
       "good_citations": 1,
-      "seconds": 30.4
+      "seconds": 30.1
     },
     {
       "id": "bert-corpus",
@@ -265,7 +265,7 @@
       "retrieved": true,
       "supported": false,
       "good_citations": 0,
-      "seconds": 30.8
+      "seconds": 31.2
     },
     {
       "id": "bert-glue",
@@ -279,7 +279,7 @@
       "retrieved": true,
       "supported": true,
       "good_citations": 1,
-      "seconds": 41.9
+      "seconds": 42.4
     },
     {
       "id": "bert-vocabulary",
@@ -293,7 +293,7 @@
       "retrieved": true,
       "supported": true,
       "good_citations": 1,
-      "seconds": 37.2
+      "seconds": 36.6
     },
     {
       "id": "bert-steps",
@@ -308,7 +308,7 @@
       "retrieved": true,
       "supported": true,
       "good_citations": 1,
-      "seconds": 40.9
+      "seconds": 41.2
     },
     {
       "id": "science-major-credits",
@@ -337,7 +337,7 @@
       "retrieved": true,
       "supported": true,
       "good_citations": 2,
-      "seconds": 43.5
+      "seconds": 42.7
     },
     {
       "id": "science-failed-credits",
@@ -351,7 +351,7 @@
       "retrieved": true,
       "supported": true,
       "good_citations": 1,
-      "seconds": 31.0
+      "seconds": 31.1
     },
     {
       "id": "science-honours-gpa",
@@ -394,7 +394,7 @@
       "retrieved": true,
       "supported": true,
       "good_citations": 1,
-      "seconds": 25.6
+      "seconds": 26.2
     },
     {
       "id": "science-high-school-average",
@@ -408,7 +408,7 @@
       "retrieved": true,
       "supported": true,
       "good_citations": 1,
-      "seconds": 45.1
+      "seconds": 46.4
     },
     {
       "id": "science-deans-list",
@@ -422,7 +422,7 @@
       "retrieved": true,
       "supported": true,
       "good_citations": 1,
-      "seconds": 27.0
+      "seconds": 28.0
     },
     {
       "id": "science-required-to-withdraw",
@@ -436,7 +436,7 @@
       "retrieved": true,
       "supported": true,
       "good_citations": 1,
-      "seconds": 30.5
+      "seconds": 31.4
     },
     {
       "id": "none-parking",
@@ -448,7 +448,7 @@
       "retrieved": false,
       "supported": false,
       "good_citations": 0,
-      "seconds": 20.5
+      "seconds": 20.9
     },
     {
       "id": "none-tuition",
@@ -460,7 +460,7 @@
       "retrieved": false,
       "supported": false,
       "good_citations": 0,
-      "seconds": 21.6
+      "seconds": 20.5
     },
     {
       "id": "none-gpt3",
@@ -472,7 +472,7 @@
       "retrieved": false,
       "supported": false,
       "good_citations": 0,
-      "seconds": 35.0
+      "seconds": 35.7
     },
     {
       "id": "none-founded",
@@ -484,7 +484,7 @@
       "retrieved": false,
       "supported": false,
       "good_citations": 0,
-      "seconds": 24.5
+      "seconds": 23.8
     },
     {
       "id": "none-resnet",
@@ -496,7 +496,7 @@
       "retrieved": false,
       "supported": false,
       "good_citations": 0,
-      "seconds": 29.6
+      "seconds": 29.5
     }
   ]
 }
