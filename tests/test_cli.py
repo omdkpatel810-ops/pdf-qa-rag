@@ -404,3 +404,141 @@ def test_show_points_out_missing_vectors(tmp_path, make_pdf):
     out = io.StringIO()
     main(["--db", db, "show", "1"], out=out, err=io.StringIO(), embedder=WordHashEmbedder())
     assert "Vectors  0 of 1, from test/word-hash. Make the rest with: pdfqa index" in out.getvalue()
+
+
+# ask and serve
+
+
+@pytest.fixture
+def asking(tmp_path: Path, embedder):
+    """Run pdfqa with a scripted model, on a library of two small documents."""
+    from helpers import shelf_library
+
+    from pdfqa import library
+
+    db = tmp_path / "shelf.db"
+    conn = library.connect(db)
+    shelf_library(conn, embedder)
+    conn.close()
+
+    def run(*args: str, writer=None, out: io.StringIO | None = None, err: io.StringIO | None = None):
+        out, err = out or io.StringIO(), err or io.StringIO()
+        code = main(["--db", str(db), *args], out=out, err=err, embedder=embedder, writer=writer)
+        return code, out.getvalue(), err.getvalue()
+
+    return run
+
+
+def test_ask_prints_the_answer_and_its_sources(asking):
+    from helpers import ScriptedWriter
+
+    writer = ScriptedWriter("Assembly takes about two hours, as Source [1] says.")
+    code, out, err = asking("ask", "How long does wardrobe assembly take?", "-k", "3", writer=writer)
+    assert (code, err) == (0, "")
+    answer, sources, model = out.split("\n\n")
+    assert answer == "Assembly takes about two hours, as [1] says."
+    assert sources == 'Sources\n  [1] "Assembly" p. i: Assembly takes about two hours for a large wardrobe.'
+    assert model.startswith("test/scripted · ") and model.endswith(" s\n")
+    assert writer.prompts[0][1].count("Source [") == 3
+
+
+def test_ask_in_a_terminal_streams_the_answer(asking):
+    from helpers import ScriptedWriter
+
+    out, err = Terminal(), Terminal()
+    writer = ScriptedWriter("Two ", "hours [1].")
+    code, printed, status = asking("ask", "wardrobe", "--doc", "2", writer=writer, out=out, err=err)
+    assert code == 0
+    assert printed.startswith('Two hours [1].\n\nSources\n  [1] "Assembly" p. i:')
+    assert status == "\rReading 2 passages…" + "\r" + " " * 19 + "\r"  # shown while waiting, then erased
+
+
+def test_ask_when_the_documents_dont_say(asking):
+    from helpers import ScriptedWriter
+
+    code, out, _ = asking(
+        "ask", "What does parking cost for students?", writer=ScriptedWriter("The documents don't say.")
+    )
+    assert code == 0
+    assert out.startswith("The documents don't say.\n\nClosest passages, if you want to look yourself:\n  \"")
+
+
+def test_ask_with_a_long_quote_and_a_page_range(asking, monkeypatch):
+    from helpers import ScriptedWriter
+
+    from pdfqa import cli
+
+    hit_line = cli._source_line
+    seen = []
+    monkeypatch.setattr(cli, "_source_line", lambda hit: seen.append(hit) or hit_line(hit))
+    asking("ask", "credit hours", writer=ScriptedWriter("120 [1]."))
+    chunk = seen[0].chunk
+    spread = type(seen[0])(
+        chunk.__class__(**{**chunk.__dict__, "page_end": 2, "label_end": "1", "text": "word " * 30}), 1.0
+    )
+    assert hit_line(spread) == '"Faculty of Science" pp. i–1: ' + "word " * 17 + "word …"
+
+
+def test_ask_needs_documents(tmp_path, embedder):
+    from helpers import ScriptedWriter
+
+    out, err = io.StringIO(), io.StringIO()
+    code = main(
+        ["--db", str(tmp_path / "empty.db"), "ask", "anything"],
+        out=out,
+        err=err,
+        embedder=embedder,
+        writer=ScriptedWriter(),
+    )
+    assert code == 1
+    assert err.getvalue() == (
+        "error: The library is empty, so there's nothing to answer from. Add a PDF with: pdfqa add FILE.pdf\n"
+    )
+
+
+def test_ask_reports_model_errors(asking):
+    from helpers import ScriptedWriter
+
+    from pdfqa.generate import GenerationError
+
+    code, _, err = asking("ask", "wardrobe", writer=ScriptedWriter(error=GenerationError("No internet.")))
+    assert (code, err) == (1, "error: No internet.\n")
+
+
+def test_ask_with_an_unknown_model(asking):
+    code, _, err = asking("ask", "wardrobe", "--model", "gpt-4")
+    assert code == 1 and err.startswith("error: Unknown model 'gpt-4'.")
+
+
+def test_the_model_comes_from_pdfqa_model(asking, monkeypatch):
+    monkeypatch.setenv("PDFQA_MODEL", "nonsense")
+    code, _, err = asking("ask", "wardrobe")
+    assert code == 1 and "Unknown model 'nonsense'" in err
+
+
+def test_ask_says_when_it_downloads_the_model(asking, monkeypatch):
+    from pdfqa.generate import LocalModel
+
+    monkeypatch.setattr(LocalModel, "is_downloaded", staticmethod(lambda: False))
+    monkeypatch.setattr(LocalModel, "stream", lambda self, system, user, max_tokens: iter(["Two hours [1]."]))
+    code, out, err = asking("ask", "wardrobe")
+    assert code == 0
+    assert err == "Downloading the answer model, Qwen3-1.7B (2.1 GB, only this once)…\n"
+    assert out.startswith("Two hours [1].")
+
+
+def test_serve_starts_the_web_page(asking, monkeypatch):
+    from helpers import ScriptedWriter
+
+    from pdfqa import web
+
+    started = []
+    monkeypatch.setattr(
+        web, "serve", lambda db, embedder, writer, **options: started.append((db, writer, options)) or 0
+    )
+    writer = ScriptedWriter()
+    code, _, _ = asking("serve", "--port", "8123", "--no-browser", "-k", "4", writer=writer)
+    assert code == 0
+    db, used, options = started[0]
+    assert db.name == "shelf.db" and used is writer
+    assert (options["port"], options["browser"], options["limit"]) == (8123, False, 4)

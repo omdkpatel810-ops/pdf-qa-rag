@@ -1,4 +1,4 @@
-"""Command line: pdfqa add | list | show | chunks | rechunk | remove | index | search."""
+"""Command line: pdfqa add | list | show | chunks | rechunk | remove | index | search | ask | serve."""
 
 from __future__ import annotations
 
@@ -11,11 +11,13 @@ from pathlib import Path
 from typing import TextIO
 
 from pdfqa import __version__, library
+from pdfqa.answer import Done, Sources, Text, ask
 from pdfqa.chunk import DEFAULT_OVERLAP, DEFAULT_SIZE
 from pdfqa.embed import BgeSmall, Embedder, EmbeddingError
 from pdfqa.extract import PdfError
+from pdfqa.generate import DOWNLOAD_SIZE, GenerationError, LocalModel, Writer, make_writer
 from pdfqa.ingest import Added, add_pdf, index, rechunk
-from pdfqa.search import MODES, VectorIndex, search
+from pdfqa.search import MODES, Hit, VectorIndex, search
 
 _TITLE_WIDTH = 44
 _RULE_WIDTH = 72
@@ -81,7 +83,27 @@ def build_parser() -> argparse.ArgumentParser:
     find.add_argument("-k", "--limit", type=int, default=5, help="how many chunks to show (default: 5)")
     find.add_argument("--doc", type=int, metavar="ID", help="only search this document")
     find.add_argument("--full", action="store_true", help="print whole chunks instead of their first 60 words")
+
+    question = commands.add_parser("ask", help="answer a question from your PDFs, citing the pages")
+    question.add_argument("question", nargs="+", help="the question (quotes are optional)")
+    _answer_options(question)
+    question.add_argument("--doc", type=int, metavar="ID", help="only use this document")
+
+    serve = commands.add_parser("serve", help="open the web page for asking questions and adding PDFs")
+    serve.add_argument("--port", type=int, default=8000, help="port on this computer (default: 8000)")
+    serve.add_argument("--no-browser", action="store_true", help="don't open the page in a browser")
+    _answer_options(serve)
     return parser
+
+
+def _answer_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--model",
+        default=os.environ.get("PDFQA_MODEL", "local"),
+        help="local (Qwen3-1.7B on this computer, the default), claude (needs your ANTHROPIC_API_KEY), "
+        "or a Claude model id. Set PDFQA_MODEL to change the default.",
+    )
+    parser.add_argument("-k", "--limit", type=int, default=5, help="how many passages the model reads (default: 5)")
 
 
 def _chunk_options(parser: argparse.ArgumentParser) -> None:
@@ -101,12 +123,20 @@ def main(
     out: TextIO | None = None,
     err: TextIO | None = None,
     embedder: Embedder | None = None,
+    writer: Writer | None = None,
 ) -> int:
-    """Run a command. `embedder` lets tests use a small stand-in instead of downloading the real model."""
+    """Run a command. `embedder` and `writer` let tests use small stand-ins instead of downloading models."""
     out = out or sys.stdout
     err = err or sys.stderr
     args = build_parser().parse_args(argv)
     args.embedder = embedder or BgeSmall()
+    args.writer = writer
+    if args.command in ("ask", "serve") and writer is None:
+        try:
+            args.writer = make_writer(args.model)
+        except ValueError as exc:
+            print(f"error: {exc}", file=err)
+            return 1
     try:
         conn = library.connect(args.db or default_db_path())
     except (OSError, sqlite3.Error, RuntimeError) as exc:
@@ -117,7 +147,7 @@ def main(
     except library.NotFound as exc:
         print(f"error: No document #{exc.args[0]}. See what's in the library with: pdfqa list", file=err)
         return 1
-    except (ValueError, EmbeddingError) as exc:
+    except (ValueError, EmbeddingError, GenerationError) as exc:
         print(f"error: {exc}", file=err)
         return 1
     finally:
@@ -333,6 +363,90 @@ def _search(conn: sqlite3.Connection, args: argparse.Namespace, out: TextIO, err
     return 0
 
 
+def _ask(conn: sqlite3.Connection, args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
+    question = " ".join(args.question)
+    if not library.list_documents(conn):
+        raise ValueError("The library is empty, so there's nothing to answer from. Add a PDF with: pdfqa add FILE.pdf")
+    live = out.isatty()  # in a terminal, show the answer as it's written; otherwise print the tidied one
+    if isinstance(args.writer, LocalModel) and not args.writer.is_downloaded():
+        print(f"Downloading the answer model, Qwen3-1.7B ({DOWNLOAD_SIZE}, only this once)…", file=err, flush=True)
+    vectors = VectorIndex(conn, args.embedder)
+    status = _Status(err)
+    for event in ask(conn, question, index=vectors, writer=args.writer, limit=args.limit, document_id=args.doc):
+        if isinstance(event, Sources):
+            status.show(f"Reading {_plural(len(event.hits), 'passage')}…")
+        elif isinstance(event, Text):
+            status.clear()
+            if live:
+                print(event.text, end="", file=out, flush=True)
+        elif isinstance(event, Done):
+            status.clear()
+            _print_answer(event.answer, live, out)
+    return 0
+
+
+def _print_answer(answer, live: bool, out: TextIO) -> None:
+    if live:
+        print(file=out)
+    else:
+        print(answer.text, file=out)
+    print(file=out)
+    if answer.found and answer.cited:
+        print("Sources", file=out)
+        for number in answer.cited:
+            print(f"  [{number}] {_source_line(answer.sources[number - 1])}", file=out)
+    elif answer.sources:
+        print("Closest passages, if you want to look yourself:", file=out)
+        for hit in answer.sources[:3]:
+            print(f"  {_source_line(hit)}", file=out)
+    print(file=out)
+    print(f"{answer.model} · {answer.seconds:.1f} s", file=out)
+
+
+def _source_line(hit: Hit) -> str:
+    chunk = hit.chunk
+    pages = (
+        f"p. {chunk.label_start}"
+        if chunk.page_start == chunk.page_end
+        else f"pp. {chunk.label_start}–{chunk.label_end}"
+    )
+    words = chunk.text.split()
+    quote = " ".join(words[:18]) + (" …" if len(words) > 18 else "")
+    return f'"{_shorten(chunk.title, 32)}" {pages}: {quote}'
+
+
+class _Status:
+    """A one-line note on stderr while waiting (terminals only), erased when output starts."""
+
+    def __init__(self, err: TextIO) -> None:
+        self.err, self.width = err, 0
+
+    def show(self, text: str) -> None:
+        if self.err.isatty():
+            print(f"\r{text}", end="", file=self.err, flush=True)
+            self.width = len(text)
+
+    def clear(self) -> None:
+        if self.width:
+            print("\r" + " " * self.width + "\r", end="", file=self.err, flush=True)
+            self.width = 0
+
+
+def _serve(conn: sqlite3.Connection, args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
+    from pdfqa.web import serve
+
+    conn.close()  # the server opens a connection per request
+    return serve(
+        args.db or default_db_path(),
+        args.embedder,
+        args.writer,
+        port=args.port,
+        browser=not args.no_browser,
+        out=out,
+        limit=args.limit,
+    )
+
+
 _COMMANDS = {
     "add": _add,
     "list": _list,
@@ -342,6 +456,8 @@ _COMMANDS = {
     "remove": _remove,
     "index": _index,
     "search": _search,
+    "ask": _ask,
+    "serve": _serve,
 }
 
 
