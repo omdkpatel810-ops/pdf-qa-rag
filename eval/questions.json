@@ -1,0 +1,182 @@
+[
+  {
+    "id": "attention-layers",
+    "question": "How many identical layers does the Transformer's encoder stack have?",
+    "answer": ["\\b6\\b|\\bsix\\b"],
+    "evidence": ["N\\s*=\\s*6"]
+  },
+  {
+    "id": "attention-scaling",
+    "question": "Why are the dot products scaled by 1/√dk in attention?",
+    "answer": ["large", "gradient"],
+    "evidence": ["extremely small gradients"]
+  },
+  {
+    "id": "attention-heads",
+    "question": "How many attention heads does the base Transformer use?",
+    "answer": ["\\b8\\b|\\beight\\b"],
+    "evidence": ["h\\s*=\\s*8"]
+  },
+  {
+    "id": "attention-bleu",
+    "question": "What BLEU score did the big Transformer reach on WMT 2014 English-to-German translation?",
+    "answer": ["28\\.4"],
+    "evidence": ["28\\.4"]
+  },
+  {
+    "id": "attention-training-time",
+    "question": "How long did it take to train the big Transformer model?",
+    "answer": ["3\\.5 days"],
+    "evidence": ["3\\.5 days"]
+  },
+  {
+    "id": "attention-optimizer",
+    "question": "Which optimizer was used to train the Transformer?",
+    "answer": ["adam"],
+    "evidence": ["Adam optimizer"]
+  },
+  {
+    "id": "attention-dropout",
+    "question": "What dropout rate does the base Transformer model use?",
+    "answer": ["0\\.1"],
+    "evidence": ["P\\s*drop\\s*=\\s*0\\.1"]
+  },
+  {
+    "id": "attention-positions",
+    "question": "How does the Transformer encode the position of each word?",
+    "answer": ["sin|cos"],
+    "evidence": ["sine and cosine"]
+  },
+  {
+    "id": "bert-tasks",
+    "question": "What are the two tasks BERT is pre-trained on?",
+    "answer": ["mask", "next sentence"],
+    "evidence": ["masked", "next sentence"]
+  },
+  {
+    "id": "bert-mask-rate",
+    "question": "What percentage of input tokens does BERT mask during pre-training?",
+    "answer": ["15\\s*%|15 percent"],
+    "evidence": ["15\\s*%"]
+  },
+  {
+    "id": "bert-mask-token",
+    "question": "When BERT picks a token to mask, how often is it replaced with the [MASK] token?",
+    "answer": ["80\\s*%|80 percent"],
+    "evidence": ["80\\s*% of the time"]
+  },
+  {
+    "id": "bert-large-size",
+    "question": "How many parameters does BERT-Large have?",
+    "answer": ["340\\s*M|340 million"],
+    "evidence": ["340M"]
+  },
+  {
+    "id": "bert-corpus",
+    "question": "What text was BERT pre-trained on?",
+    "answer": ["books\\s?corpus", "wikipedia"],
+    "evidence": ["BooksCorpus", "Wikipedia"]
+  },
+  {
+    "id": "bert-glue",
+    "question": "What GLUE score does BERT reach?",
+    "answer": ["80\\.5"],
+    "evidence": ["80\\.5"]
+  },
+  {
+    "id": "bert-vocabulary",
+    "question": "How large is BERT's WordPiece vocabulary?",
+    "answer": ["30,?000|30k|30 thousand"],
+    "evidence": ["30,000 token"]
+  },
+  {
+    "id": "bert-steps",
+    "question": "For how many steps was BERT pre-trained?",
+    "answer": ["1,?000,?000|1 million|one million|\\b1M\\b"],
+    "evidence": ["(1,000,000|1M) steps"]
+  },
+  {
+    "id": "science-major-credits",
+    "question": "How many credit hours does a B.Sc. Major need to graduate?",
+    "answer": ["\\b120\\b"],
+    "evidence": ["must complete 120 credit hours"]
+  },
+  {
+    "id": "science-cs-gpa",
+    "question": "What minimum degree grade point average does a Computer Science Major need?",
+    "answer": ["2\\.5"],
+    "evidence": ["2\\.50 for Computer Science"]
+  },
+  {
+    "id": "science-failed-credits",
+    "question": "How many credit hours of failed courses can a Major student have before being required to withdraw?",
+    "answer": ["\\b18\\b"],
+    "evidence": ["18 credit hours of fail"]
+  },
+  {
+    "id": "science-honours-gpa",
+    "question": "What degree grade point average is needed to enter an Honours program?",
+    "answer": ["3\\.0"],
+    "evidence": ["DGPA of (at least )?3\\.00"]
+  },
+  {
+    "id": "science-deferred-exam",
+    "question": "How soon after missing a final exam must a student apply for a deferred exam?",
+    "answer": ["48 hours"],
+    "evidence": ["within 48 hours"]
+  },
+  {
+    "id": "science-supplemental",
+    "question": "Are supplemental exams allowed in Faculty of Science courses?",
+    "answer": ["\\bno\\b|not (permitted|allowed)"],
+    "evidence": ["Supplemental Examinations are not permitted"]
+  },
+  {
+    "id": "science-high-school-average",
+    "question": "What high school average is needed to enter the Faculty of Science directly?",
+    "answer": ["80\\s*%|80 percent"],
+    "evidence": ["minimum 80% average"]
+  },
+  {
+    "id": "science-deans-list",
+    "question": "What term grade point average puts a student on the Dean's Honour List?",
+    "answer": ["3\\.75"],
+    "evidence": ["Term Grade Point Average of 3\\.75"]
+  },
+  {
+    "id": "science-required-to-withdraw",
+    "question": "For how long is a student who is Required to Withdraw kept out of the Faculty of Science?",
+    "answer": ["\\b5\\b|\\bfive\\b"],
+    "evidence": ["5 calendar years"]
+  },
+  {
+    "id": "none-parking",
+    "question": "How much does a parking pass cost on campus?",
+    "answer": null,
+    "evidence": []
+  },
+  {
+    "id": "none-tuition",
+    "question": "What is the tuition fee for a Computer Science student?",
+    "answer": null,
+    "evidence": []
+  },
+  {
+    "id": "none-gpt3",
+    "question": "How many parameters does GPT-3 have?",
+    "answer": null,
+    "evidence": []
+  },
+  {
+    "id": "none-founded",
+    "question": "In what year was the University of Manitoba founded?",
+    "answer": null,
+    "evidence": []
+  },
+  {
+    "id": "none-resnet",
+    "question": "What accuracy does ResNet-50 reach on ImageNet?",
+    "answer": null,
+    "evidence": []
+  }
+]
