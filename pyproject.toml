@@ -19,7 +19,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-cov>=5", "hypothesis>=6.100", "reportlab>=4", "ruff>=0.6"]
+claude = ["anthropic>=0.40"]  # only for --model claude
+dev = ["pytest>=8", "pytest-cov>=5", "hypothesis>=6.100", "reportlab>=4", "ruff>=0.6", "anthropic>=0.40"]
 
 [project.urls]
 Repository = "https://github.com/omdkpatel810-ops/pdf-qa-rag"
@@ -29,6 +30,9 @@ pdfqa = "pdfqa.cli:main"
 
 [tool.setuptools]
 packages = ["pdfqa"]
+
+[tool.setuptools.package-data]
+pdfqa = ["static/*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
