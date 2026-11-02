@@ -2,8 +2,8 @@
 
 The local model is Qwen3-1.7B (Apache 2.0), 4-bit, on ONNX Runtime: the same runtime as the embedding model,
 so there's still no PyTorch, no API key and no per-question cost. The 4-bit version beat the 8-bit one on
-five test questions, 4 right to 3, and how they failed matters more: 4-bit's miss was a cautious "the
-documents don't say", while 8-bit twice made up a wrong answer from the wrong passages. ONNX Runtime runs one forward pass; the
+five test questions, 4 right to 3, and how they failed matters more: 4-bit's one miss was a cautious "the
+documents don't say", while one of 8-bit's two was a wrong answer built from unrelated passages. ONNX Runtime runs one forward pass; the
 loop that turns passes into text is here:
 
 1. **Prefill.** The prompt goes through the model in slices of 256 tokens. Each pass returns the attention
