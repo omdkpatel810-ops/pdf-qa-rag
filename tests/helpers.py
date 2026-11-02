@@ -111,3 +111,64 @@ class WordHashEmbedder:
         for word in re.findall(r"\w+", text.lower()):
             vector[int(hashlib.md5(word.encode()).hexdigest(), 16) % 64] += 1
         return unit(vector)
+
+
+class ScriptedWriter:
+    """A stand-in for a language model: replies with the same pieces of text every time, and records prompts."""
+
+    name = "test/scripted"
+
+    def __init__(self, *pieces: str, error: Exception | None = None) -> None:
+        self.pieces = pieces or ("Assembly takes about two hours [1].",)
+        self.error = error
+        self.prompts: list[tuple[str, str, int]] = []
+
+    def stream(self, system, user, max_tokens):
+        self.prompts.append((system, user, max_tokens))
+        if self.error:
+            raise self.error
+        yield from self.pieces
+
+
+def shelf_library(conn, embedder) -> tuple[int, int]:
+    """Two small documents with vectors: (science id, assembly id). Built directly, no PDFs needed."""
+    from pdfqa import library
+    from pdfqa.chunk import Chunk
+    from pdfqa.clean import Page
+    from pdfqa.ingest import index
+
+    ids = []
+    for title, texts, sha in (
+        (
+            "Faculty of Science",
+            [
+                "Students must complete 120 credit hours to graduate with a Bachelor of Science major.",
+                "COMP 1012 teaches programming for scientists and engineers using Python.",
+            ],
+            "a",
+        ),
+        (
+            "Assembly",
+            ["Assembly takes about two hours for a large wardrobe.", "Every quote is free and comes within one day."],
+            "b",
+        ),
+    ):
+        pages = [Page(number=n, label=label, text=" ".join(texts)) for n, label in enumerate(("i", "1"), start=1)]
+        chunks = [
+            Chunk(position=i, text=text, page_start=i + 1, page_end=i + 1, word_count=len(text.split()))
+            for i, text in enumerate(texts)
+        ]
+        ids.append(
+            library.add_document(
+                conn,
+                title=title,
+                file_name=f"{title}.pdf",
+                sha256=sha * 64,
+                pages=pages,
+                chunks=chunks,
+                chunk_size=200,
+                chunk_overlap=40,
+            )
+        )
+    index(conn, embedder)
+    return ids[0], ids[1]
