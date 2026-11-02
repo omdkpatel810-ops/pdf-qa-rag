@@ -103,6 +103,14 @@ def test_nothing_found_means_no_model_call(shelf):
         ("<think>hmm</think>\nTwo hours [1].", "Two hours [1].", [1], True),
         ("  ", NOT_FOUND, [], False),
         ("Two hours, roughly.", "Two hours, roughly.", [], True),  # an answer without citations is still an answer
+        ("The sources don't give the cost [2].", "The sources don't give the cost [2].", [2], False),
+        ("There is no information about parking.", "There is no information about parking.", [], False),
+        (
+            "Two hours [1]. The documents don't say who does it.",
+            "Two hours [1]. The documents don't say who does it.",
+            [1],
+            True,
+        ),
     ],
 )
 def test_tidying_replies(reply, text, cited, found):

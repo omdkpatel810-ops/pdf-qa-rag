@@ -8,6 +8,7 @@ loosely, so the reply is tidied afterwards:
 - "Source [2]", "[Source 2]", "[2, 3]" and "[2-3]" all become [2] or [2][3].
 - Numbers that don't match a passage are dropped, never shown as a citation to nothing.
 - A "The documents don't say." tacked on after a real, cited answer is removed.
+- An answer counts as "not found" when every sentence of it says the documents don't cover the question.
 
 Each [n] maps to a passage, and each passage to its document and printed page numbers, so the citations
 are checked links rather than text the model made up.
@@ -38,9 +39,12 @@ _SOURCE_WORD = re.compile(r"\b[Ss]ources? \[(\d+)\]|\[[Ss]ources? (\d+)\]")
 _NUMBER_LIST = re.compile(r"\[(\d+(?:\s*(?:,|and|-|–)\s*\d+)+)\]")
 _CITATION = re.compile(r"\[(\d+)\]")
 _SAYS_NOTHING = re.compile(
-    r"(documents?|sources?|passages?|text)\s+(do not|don't|does not|doesn't)\s+(say|mention|contain|provide|include|state|answer)",
+    r"(documents?|sources?|passages?|text)\s+(do not|don't|does not|doesn't)\s+"
+    r"(say|mention|contain|provide|include|state|answer|specify|give|list|cover|discuss|describe)"
+    r"|\bno (information|mention|details?)\b",
     re.IGNORECASE,
 )
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
 
 
 @dataclass(frozen=True)
@@ -133,9 +137,11 @@ def tidy(text: str, sources: int) -> tuple[str, list[int], bool]:
     cited = list(dict.fromkeys(int(n) for n in _CITATION.findall(text)))
     if cited and text.endswith(NOT_FOUND) and text != NOT_FOUND:
         text = text[: -len(NOT_FOUND)].rstrip()
-    found = bool(cited) or not (_SAYS_NOTHING.search(text) or not text)
     if not text:
-        text = NOT_FOUND
+        return NOT_FOUND, cited, False
+    # Not found when every sentence says the documents don't cover it, cited or not ("The sources don't
+    # give the cost [2]."). One real sentence is enough to count as an answer.
+    found = not all(_SAYS_NOTHING.search(sentence) for sentence in _SENTENCE_END.split(text))
     return text, cited, found
 
 
