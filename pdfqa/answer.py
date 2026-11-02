@@ -9,6 +9,8 @@ loosely, so the reply is tidied afterwards:
 - Numbers that don't match a passage are dropped, never shown as a citation to nothing.
 - A "The documents don't say." tacked on after a real, cited answer is removed.
 - An answer counts as "not found" when every sentence of it says the documents don't cover the question.
+- Maths written as LaTeX, which small models do even when told not to, becomes plain text the way the PDFs
+  write it: `$\\frac{1}{\\sqrt{d_k}}$` becomes 1/√dk. Only real maths changes: "$5 and $10" stays.
 
 Each [n] maps to a passage, and each passage to its document and printed page numbers, so the citations
 are checked links rather than text the model made up.
@@ -45,6 +47,13 @@ _SAYS_NOTHING = re.compile(
     re.IGNORECASE,
 )
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+_MATH_SPAN = re.compile(r"\$\$?(.+?)\$\$?|\\\((.+?)\\\)", re.DOTALL)
+_TEXT_COMMAND = re.compile(r"\\(?:text|mathrm|mathbf|mathit|operatorname)\{([^{}]*)\}")
+_SQRT = re.compile(r"\\sqrt\{([^{}]*)\}")
+_FRAC = re.compile(r"\\frac\{([^{}]*)\}\{([^{}]*)\}")
+_SYMBOL = re.compile(r"\\(cdot|times|approx|leq|geq|le|ge)\b")
+_SYMBOLS = {"cdot": "·", "times": "×", "approx": "≈", "leq": "≤", "geq": "≥", "le": "≤", "ge": "≥"}
+_SUBSCRIPT = re.compile(r"_\{?([A-Za-z0-9]+)\}?")
 
 
 @dataclass(frozen=True)
@@ -128,6 +137,8 @@ def ask(
 def tidy(text: str, sources: int) -> tuple[str, list[int], bool]:
     """Clean up a reply: normalise citations, drop ones to missing sources. Returns (text, cited, found)."""
     text = _THINKING.sub("", text)
+    text = _MATH_SPAN.sub(_plain_span, text)
+    text = _commands(text)
     text = _SOURCE_WORD.sub(lambda m: f"[{m.group(1) or m.group(2)}]", text)
     text = _NUMBER_LIST.sub(lambda m: "".join(f"[{n}]" for n in _numbers(m.group(1))), text)
     text = _CITATION.sub(lambda m: m.group(0) if 1 <= int(m.group(1)) <= sources else "", text)
@@ -143,6 +154,23 @@ def tidy(text: str, sources: int) -> tuple[str, list[int], bool]:
     # give the cost [2]."). One real sentence is enough to count as an answer.
     found = not all(_SAYS_NOTHING.search(sentence) for sentence in _SENTENCE_END.split(text))
     return text, cited, found
+
+
+def _plain_span(match: re.Match[str]) -> str:
+    """A $...$ or \\(...\\) span as plain text, if it's maths; money like "$5 and $10" is left alone."""
+    expression = match.group(1) or match.group(2)
+    if not re.search(r"[\\^_]", expression):
+        return match.group(0)
+    expression = _SUBSCRIPT.sub(r"\1", _commands(expression))
+    return expression.replace("{", "").replace("}", "").strip()
+
+
+def _commands(text: str) -> str:
+    """LaTeX commands as plain text. Safe outside maths too: it only touches backslash commands."""
+    text = _TEXT_COMMAND.sub(r"\1", text)
+    text = _SQRT.sub(lambda m: "√" + _SUBSCRIPT.sub(r"\1", m.group(1)), text)
+    text = _FRAC.sub(lambda m: f"{m.group(1)}/{m.group(2)}", text)
+    return _SYMBOL.sub(lambda m: _SYMBOLS[m.group(1)], text)
 
 
 def _numbers(listed: str) -> list[int]:

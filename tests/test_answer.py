@@ -111,6 +111,16 @@ def test_nothing_found_means_no_model_call(shelf):
             [1],
             True,
         ),
+        # Maths as LaTeX becomes plain text, written the way the PDFs write it.
+        (r"Scaled by $ \frac{1}{\sqrt{d_k}} $ [2].", "Scaled by 1/√dk [2].", [2], True),
+        (r"Scaled by $1/\sqrt{dk}$ [2].", "Scaled by 1/√dk [2].", [2], True),
+        (r"Keys of size \(d_{k}\) [2].", "Keys of size dk [2].", [2], True),
+        (r"Scaled by \frac{1}{\sqrt{d_k}} [2].", "Scaled by 1/√dk [2].", [2], True),
+        (r"$$\text{softmax}(QK^T) \cdot V$$ [2].", "softmax(QK^T) · V [2].", [2], True),
+        (r"Within $\pm 2$ [2].", r"Within \pm 2 [2].", [2], True),  # unknown commands are left as they are
+        # Only maths changes: money and names with underscores stay.
+        ("Passes cost $5 and $10 [1].", "Passes cost $5 and $10 [1].", [1], True),
+        ("It sets warmup_steps = 4000 [1].", "It sets warmup_steps = 4000 [1].", [1], True),
     ],
 )
 def test_tidying_replies(reply, text, cited, found):
